@@ -371,19 +371,19 @@ Transform the 15-notebook LLM learning series into a 20-notebook deep-dive curri
     - Use MCP Jupyter tools to append cells
     - _Requirements: 11.1, 11.2_
 
-  - [-] 15.2 Add history section to Notebook 01 (MLX Fundamentals)
+  - [x] 15.2 Add history section to Notebook 01 (MLX Fundamentals)
     - Cover ML frameworks: Theano → TensorFlow → PyTorch → JAX → MLX (2023)
     - _Requirements: 11.1, 11.2_
 
-  - [~] 15.3 Add history section to Notebook 02 (Math Foundations)
+  - [x] 15.3 Add history section to Notebook 02 (Math Foundations)
     - Cover key mathematical developments relevant to deep learning
     - _Requirements: 11.1, 11.2_
 
-  - [~] 15.4 Add history section to Notebook 03 (Tokenization)
+  - [x] 15.4 Add history section to Notebook 03 (Tokenization)
     - Cover: Word-level → BPE (2016) → WordPiece → Unigram → SentencePiece → tiktoken
     - _Requirements: 11.1, 11.2_
 
-  - [~] 15.5 Add history section to Notebook 04 (Embeddings & Positional Encoding)
+  - [x] 15.5 Add history section to Notebook 04 (Embeddings & Positional Encoding)
     - Cover: Sinusoidal → Learned → RoPE (2021) → ALiBi (2021) → p-RoPE (2024)
     - _Requirements: 11.1, 11.2, 11.3_
 
