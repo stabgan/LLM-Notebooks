@@ -407,7 +407,7 @@ Transform the 15-notebook LLM learning series into a 20-notebook deep-dive curri
     - Cover Gemma evolution: Gemma 1 → Gemma 2 → Gemma 3 → Gemma 4 and Google's open model strategy
     - _Requirements: 11.1, 11.2_
 
-- [-] 16. Final checkpoint — Full series validation
+- [x] 16. Final checkpoint — Full series validation
   - Verify all 20 notebooks have 📜 History & Alternatives sections
   - Verify consistent emoji markers (💡⚡🎯⚠️) across all notebooks
   - Verify MLX-only code (no PyTorch/TensorFlow)
