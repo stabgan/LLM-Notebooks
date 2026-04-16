@@ -365,7 +365,7 @@ Transform the 15-notebook LLM learning series into a 20-notebook deep-dive curri
 
 ### Tier 3: Chronological Enrichment
 
-- [-] 15. Add 📜 History & Alternatives sections to remaining notebooks
+- [x] 15. Add 📜 History & Alternatives sections to remaining notebooks
   - [x] 15.1 Add history section to Notebook 00 (Environment & Apple Silicon)
     - Cover Apple Silicon evolution: M1 (2020) → M1 Pro/Max (2021) → M2 (2022) → M3 (2023) → M4 (2024)
     - Use MCP Jupyter tools to append cells
@@ -391,23 +391,23 @@ Transform the 15-notebook LLM learning series into a 20-notebook deep-dive curri
     - Cover: Bahdanau (2014) → Luong (2015) → Transformer (2017) → Flash Attention (2022) → GQA → MQA
     - _Requirements: 11.1, 11.2, 11.4_
 
-  - [~] 15.7 Add history section to Notebook 09 (Modern Architectures)
+  - [x] 15.7 Add history section to Notebook 09 (Modern Architectures)
     - Cover architecture evolution: Transformer → GPT → BERT → T5 → LLaMA → Mistral → Gemma
     - _Requirements: 11.1, 11.2_
 
-  - [~] 15.8 Add history section to Notebook 10 (Metal Custom Kernels)
+  - [x] 15.8 Add history section to Notebook 10 (Metal Custom Kernels)
     - Cover GPU compute evolution: CUDA → OpenCL → Metal → Metal 3 → custom kernel ecosystem
     - _Requirements: 11.1, 11.2_
 
-  - [~] 15.9 Add history section to Notebook 13 (Serving Locally)
+  - [x] 15.9 Add history section to Notebook 13 (Serving Locally)
     - Cover local inference: llama.cpp (2023) → MLX (2023) → Ollama → LM Studio → vLLM
     - _Requirements: 11.1, 11.2_
 
-  - [~] 15.10 Add history section to Notebook 14 (Capstone Gemma 4)
+  - [x] 15.10 Add history section to Notebook 14 (Capstone Gemma 4)
     - Cover Gemma evolution: Gemma 1 → Gemma 2 → Gemma 3 → Gemma 4 and Google's open model strategy
     - _Requirements: 11.1, 11.2_
 
-- [~] 16. Final checkpoint — Full series validation
+- [-] 16. Final checkpoint — Full series validation
   - Verify all 20 notebooks have 📜 History & Alternatives sections
   - Verify consistent emoji markers (💡⚡🎯⚠️) across all notebooks
   - Verify MLX-only code (no PyTorch/TensorFlow)
