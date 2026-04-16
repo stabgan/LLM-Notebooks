@@ -387,7 +387,7 @@ Transform the 15-notebook LLM learning series into a 20-notebook deep-dive curri
     - Cover: Sinusoidal → Learned → RoPE (2021) → ALiBi (2021) → p-RoPE (2024)
     - _Requirements: 11.1, 11.2, 11.3_
 
-  - [~] 15.6 Add history section to Notebook 05 (Self-Attention)
+  - [x] 15.6 Add history section to Notebook 05 (Self-Attention)
     - Cover: Bahdanau (2014) → Luong (2015) → Transformer (2017) → Flash Attention (2022) → GQA → MQA
     - _Requirements: 11.1, 11.2, 11.4_
 
