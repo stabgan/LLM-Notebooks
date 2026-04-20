@@ -2168,6 +2168,210 @@
         "https://arxiv.org/abs/2407.10671"
       ],
       "added_in": "b3659e4"
+    },
+    {
+      "id": "nb10-q01",
+      "notebook": "10_metal_custom_kernels.ipynb",
+      "section": "Metal kernel launch overhead vs CUDA",
+      "difficulty": "warmup",
+      "roles": [
+        "mle",
+        "research_engineer"
+      ],
+      "topic_tags": [
+        "metal",
+        "kernel-launch",
+        "overhead",
+        "cuda",
+        "apple-silicon"
+      ],
+      "question": "What is the typical kernel launch overhead on Metal vs CUDA, and why does it matter for LLM inference on Apple Silicon? When does kernel launch overhead dominate total runtime?",
+      "answer_key_points": [
+        "Metal kernel launch overhead: ~5-20 µs per dispatch on M-series chips. CUDA kernel launch overhead: ~2-10 µs on modern NVIDIA GPUs (A100/H100). Metal is slightly higher because the Metal command encoder must be committed to a command buffer before the GPU can begin execution — there's an extra CPU-side encoding step.",
+        "Why it matters for LLM inference: autoregressive generation issues one kernel per layer per token step. A 32-layer model with 5 kernels per layer (QKV proj, attention, FFN gate, FFN value, FFN down) = 160 kernel launches per token. At 20 µs each: 3.2 ms of pure launch overhead per token — comparable to the actual compute time for small batch sizes (B=1, short sequences).",
+        "When launch overhead dominates: when the kernel's compute time is shorter than the launch overhead. Rule of thumb: if the kernel runs in < 50 µs, launch overhead is ≥ 10% of total time. This happens for: (a) small batch sizes (B=1 decode step), (b) small sequence lengths (T < 128), (c) small model dimensions (d_model < 512). At B=1, T=1 (single-token decode), most LLM kernels are memory-bandwidth-bound and run in 10-100 µs — launch overhead is significant.",
+        "Mitigation strategies: (1) Kernel fusion — combine multiple small ops into one kernel (e.g., fuse RMSNorm + QKV projection). MLX does this automatically via `mx.compile`. (2) Persistent kernels — keep the GPU busy across multiple steps without re-launching. (3) Batching — increase batch size so each kernel does more work per launch. (4) Metal command buffer reuse — pre-encode a command buffer and re-execute it for repeated identical operations.",
+        "Metal-specific advantage: Metal's unified memory means CPU and GPU share the same physical DRAM. There's no PCIe transfer overhead for moving data between CPU and GPU — only the kernel launch overhead itself. On CUDA, small tensors may incur PCIe transfer latency (1-10 ms) in addition to kernel launch overhead. For LLM inference on Apple Silicon, the bottleneck is kernel launch + memory bandwidth, not PCIe."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Saying 'Metal is slower than CUDA because of higher launch overhead'. The launch overhead difference (5-20 µs vs 2-10 µs) is small compared to the ELIMINATION of PCIe transfer overhead in Metal's unified memory model. For LLM inference, the total latency is often LOWER on Apple Silicon because there's no CPU↔GPU data movement cost.",
+      "references": [
+        "https://developer.apple.com/documentation/metal/performing_calculations_on_a_gpu",
+        "https://developer.apple.com/documentation/metal/mtlcommandbuffer",
+        "https://arxiv.org/abs/2312.11514"
+      ],
+      "added_in": ""
+    },
+    {
+      "id": "nb10-q02",
+      "notebook": "10_metal_custom_kernels.ipynb",
+      "section": "Metal Shading Language vs CUDA C++ comparison",
+      "difficulty": "core",
+      "roles": [
+        "mle",
+        "research_engineer",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "msl",
+        "cuda",
+        "metal-shading-language",
+        "gpu-programming",
+        "apple-silicon"
+      ],
+      "question": "Compare Metal Shading Language (MSL) and CUDA C++ for writing custom GPU kernels. What are the key syntactic and semantic differences? How does MLX's `mx.fast.metal_kernel` expose MSL to Python?",
+      "answer_key_points": [
+        "Thread hierarchy: CUDA uses `blockIdx`, `threadIdx`, `blockDim`, `gridDim` (grid → block → thread). MSL uses `thread_position_in_grid`, `thread_position_in_threadgroup`, `threadgroup_position_in_grid`, `threads_per_threadgroup` (grid → threadgroup → thread). Semantically equivalent but different naming conventions.",
+        "Memory address spaces: CUDA has `__global__`, `__shared__`, `__local__`, `__constant__`. MSL has `device` (global), `threadgroup` (shared), `thread` (local/register), `constant` (read-only constant). The `threadgroup` keyword in MSL is both the memory qualifier AND the thread-group concept — context-dependent.",
+        "Synchronization: CUDA uses `__syncthreads()` for threadblock barrier. MSL uses `threadgroup_barrier(mem_flags::mem_threadgroup)` for threadgroup barrier. MSL also has `simdgroup_barrier` for SIMD-group level sync (32 threads on Apple Silicon). SIMD-group operations (shuffle, reduce) are first-class in MSL — in CUDA they're `__shfl_*` intrinsics.",
+        "MLX `mx.fast.metal_kernel` API: takes a kernel name, MSL source string, input arrays, output shapes/dtypes, and grid/threadgroup dimensions. Returns an MLX array. The kernel source is compiled JIT by Metal's shader compiler. Example: `mx.fast.metal_kernel(name='my_kernel', source=msl_src, inputs=[x], output_shapes=[(n,)], output_dtypes=[mx.float32], grid=(n,1,1), threadgroup=(256,1,1))`.",
+        "Key MSL-specific features: (1) `simdgroup_matrix` type for hardware-accelerated 8×8 matrix multiply (AMX/SIMD matrix ops on M-series). (2) `half` and `bfloat16` are first-class types in MSL — no special intrinsics needed. (3) Metal's `[[attribute(n)]]` syntax for binding buffers vs CUDA's implicit pointer arguments. (4) No dynamic parallelism in Metal (no kernel-from-kernel launch) — all parallelism must be specified from the CPU.",
+        "Practical implication for LLM kernels: MSL's SIMD-group matrix ops (`simdgroup_matrix_multiply_accumulate`) map directly to the AMX coprocessor on M-series chips, enabling hardware-accelerated matrix multiply in custom kernels. This is how MLX implements its fast attention and matmul kernels — not via generic SIMD but via the AMX tile engine."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Saying 'MSL is just CUDA with different syntax'. The key semantic difference is SIMD-group operations: MSL has first-class `simdgroup_*` operations that map to Apple's AMX coprocessor — there's no CUDA equivalent. Also, Metal has NO dynamic parallelism (no kernel-from-kernel launch), which fundamentally changes how recursive algorithms must be structured.",
+      "references": [
+        "https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf",
+        "https://ml-explore.github.io/mlx/build/html/python/metal.html",
+        "https://developer.apple.com/documentation/metal/mtlcomputecommandencoder"
+      ],
+      "added_in": ""
+    },
+    {
+      "id": "nb10-q03",
+      "notebook": "10_metal_custom_kernels.ipynb",
+      "section": "Shared-memory tiling patterns in Metal",
+      "difficulty": "core",
+      "roles": [
+        "mle",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "shared-memory",
+        "tiling",
+        "threadgroup-memory",
+        "metal",
+        "matmul"
+      ],
+      "question": "Explain the shared-memory tiling pattern for matrix multiplication in Metal. Why does tiling improve performance? Derive the memory traffic reduction for an M×K × K×N matmul with tile size T.",
+      "answer_key_points": [
+        "Naive matmul: each output element C[i,j] = sum_k A[i,k] * B[k,j] requires reading A[i,:] (K elements) and B[:,j] (K elements) from device memory. Total device memory reads: M×N×2K elements. For M=N=K=1024: 2 GiB of reads for a 4 MiB result — 512× amplification.",
+        "Tiled matmul: divide A into M/T × K/T tiles of size T×T, and B into K/T × N/T tiles. Each threadgroup computes one T×T tile of C. The threadgroup loads one T×T tile of A and one T×T tile of B into threadgroup (shared) memory, computes the partial dot products, then advances to the next K-tile. Total device memory reads: M×K + K×N = 2×M×K (for square matrices). Reduction factor: 2MK / (2MNK/T) = T. With T=32: 32× fewer device memory reads.",
+        "Threadgroup memory layout: A tile is stored as `threadgroup float A_tile[T][T]` in MSL. Each thread in the threadgroup loads one element: `A_tile[thread_row][thread_col] = A[global_row][k_offset + thread_col]`. After loading, `threadgroup_barrier(mem_flags::mem_threadgroup)` ensures all threads have finished loading before any thread starts computing.",
+        "Bank conflicts: threadgroup memory is organized into banks (32 banks on Apple Silicon, 4 bytes each). Accessing the same bank from multiple threads in the same SIMD group causes serialization. For a T×T tile stored row-major, accessing column j from all threads in a row causes all threads to hit bank j%32 — a bank conflict. Fix: pad the tile to T×(T+1) so column accesses are spread across banks.",
+        "Performance model: tiled matmul is compute-bound when T is large enough that the arithmetic intensity (FLOPs / bytes) exceeds the roofline threshold. For M4 Pro: peak compute ≈ 14.2 TFLOPS (fp32), memory bandwidth ≈ 273 GB/s. Roofline threshold = 14.2e12 / 273e9 ≈ 52 FLOPs/byte. Tiled matmul arithmetic intensity = T/2 FLOPs/byte. With T=128: 64 FLOPs/byte > 52 — compute-bound. With T=16: 8 FLOPs/byte < 52 — memory-bandwidth-bound."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Saying 'tiling reduces FLOPs'. Tiling does NOT reduce the number of floating-point operations — it's still M×N×2K FLOPs. Tiling reduces MEMORY TRAFFIC by reusing data loaded into threadgroup memory. The performance gain comes from replacing slow device memory reads with fast threadgroup memory reads.",
+      "references": [
+        "https://developer.apple.com/documentation/metal/mtlcomputecommandencoder",
+        "https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf",
+        "https://arxiv.org/abs/2205.14135"
+      ],
+      "added_in": ""
+    },
+    {
+      "id": "nb10-q04",
+      "notebook": "10_metal_custom_kernels.ipynb",
+      "section": "Threadgroup memory layout and SIMD-group operations",
+      "difficulty": "stretch",
+      "roles": [
+        "research_engineer",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "threadgroup",
+        "simd-group",
+        "metal",
+        "warp",
+        "shuffle"
+      ],
+      "question": "Explain SIMD-group operations in Metal Shading Language. How do `simdgroup_sum`, `simdgroup_max`, and `simdgroup_shuffle` work? How are they used to implement an efficient softmax kernel without threadgroup memory?",
+      "answer_key_points": [
+        "SIMD group (Metal) = warp (CUDA): a group of 32 threads that execute in lockstep on Apple Silicon. All threads in a SIMD group can communicate via register-level operations without going through threadgroup (shared) memory. This is faster than threadgroup memory because it avoids the memory hierarchy entirely.",
+        "`simdgroup_sum(x)`: returns the sum of `x` across all 32 threads in the SIMD group. Implemented via a tree reduction using hardware shuffle operations. Latency: ~4 cycles (log2(32) = 5 shuffle steps, pipelined). Equivalent to CUDA's `__reduce_add_sync(0xffffffff, x)`.",
+        "`simdgroup_max(x)`: returns the maximum of `x` across all 32 threads. Same tree reduction pattern. Used in numerically stable softmax: `m = simdgroup_max(x_i)` gives the per-SIMD-group maximum in one instruction.",
+        "`simdgroup_shuffle(x, lane)`: returns the value of `x` from thread `lane` in the same SIMD group. Used to broadcast a scalar (e.g., the max or sum) to all threads: `float m = simdgroup_shuffle(max_val, 0)` broadcasts thread 0's value to all 32 threads.",
+        "SIMD-group softmax (no threadgroup memory): (1) Each thread holds one element x_i. (2) `float m = simdgroup_max(x_i)` — max across 32 elements. (3) `float e_i = exp(x_i - m)` — shifted exponential. (4) `float s = simdgroup_sum(e_i)` — sum of exponentials. (5) `float y_i = e_i / s` — normalized output. Total: 2 SIMD-group reductions + 1 exp + 1 div per element. No threadgroup memory needed for sequences of length ≤ 32. For longer sequences, use multiple SIMD groups with threadgroup memory for the inter-group reduction.",
+        "Performance advantage: SIMD-group operations have ~4 cycle latency vs ~20-100 cycles for threadgroup memory reads. For softmax over short sequences (T ≤ 32), SIMD-group softmax is 5-25× faster than threadgroup-memory-based softmax. This is why MLX's attention kernel uses SIMD-group reductions for the per-head softmax normalization."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Saying 'SIMD-group operations require threadgroup memory'. SIMD-group operations (simdgroup_sum, simdgroup_max, simdgroup_shuffle) operate entirely in REGISTERS — they bypass threadgroup memory. This is their key advantage: register-level communication is ~5-25× faster than threadgroup memory. Threadgroup memory is only needed when communicating ACROSS SIMD groups.",
+      "references": [
+        "https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf",
+        "https://developer.apple.com/documentation/metal/mtlcomputecommandencoder",
+        "https://arxiv.org/abs/2205.14135"
+      ],
+      "added_in": ""
+    },
+    {
+      "id": "nb10-q05",
+      "notebook": "10_metal_custom_kernels.ipynb",
+      "section": "Roofline model for M4 Pro — compute vs memory-bandwidth bound",
+      "difficulty": "stretch",
+      "roles": [
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "roofline",
+        "m4-pro",
+        "arithmetic-intensity",
+        "memory-bandwidth",
+        "compute-bound"
+      ],
+      "question": "Apply the roofline model to classify LLM operations on M4 Pro. Given M4 Pro specs (14.2 TFLOPS fp32, 273 GB/s memory bandwidth), compute the arithmetic intensity threshold and classify: matmul (M=N=K=4096), attention (B=1, T=2048, H=32, d=128), and elementwise RMSNorm (d=4096).",
+      "answer_key_points": [
+        "Roofline model: attainable performance = min(peak_compute, bandwidth × arithmetic_intensity). Arithmetic intensity (AI) = FLOPs / bytes_transferred. The ridge point (roofline threshold) = peak_compute / bandwidth = 14.2e12 / 273e9 ≈ 52 FLOPs/byte. Operations with AI > 52 are compute-bound; AI < 52 are memory-bandwidth-bound.",
+        "Matmul (M=N=K=4096, fp32): FLOPs = 2 × 4096³ ≈ 137 GFLOPs. Memory: read A (4096²×4 = 64 MiB) + B (64 MiB) + write C (64 MiB) = 192 MiB. AI = 137e9 / (192×1e6) ≈ 714 FLOPs/byte >> 52. COMPUTE-BOUND. Attainable performance ≈ 14.2 TFLOPS (near peak). Measured latency ≈ 137e9 / 14.2e12 ≈ 9.6 ms.",
+        "Attention (B=1, T=2048, H=32, d=128, fp32): FLOPs = 2 × B × H × T² × d = 2 × 1 × 32 × 2048² × 128 ≈ 34 GFLOPs. Memory: QKV (3 × B × T × H × d × 4 = 3 × 2048 × 32 × 128 × 4 = 96 MiB) + attn matrix (B × H × T² × 4 = 32 × 2048² × 4 = 512 MiB) ≈ 608 MiB. AI = 34e9 / (608×1e6) ≈ 56 FLOPs/byte ≈ 52. NEAR RIDGE POINT — borderline compute/bandwidth-bound. At T=512: AI ≈ 14 FLOPs/byte — MEMORY-BANDWIDTH-BOUND.",
+        "RMSNorm (d=4096, B×T=2048, fp32): FLOPs = 2 × B×T × d = 2 × 2048 × 4096 ≈ 16.8 MFLOPs. Memory: read x (2048 × 4096 × 4 = 32 MiB) + write y (32 MiB) = 64 MiB. AI = 16.8e6 / (64×1e6) ≈ 0.26 FLOPs/byte << 52. MEMORY-BANDWIDTH-BOUND by 200×. Attainable performance = 273e9 × 0.26 ≈ 71 GFLOPs — far below peak compute. Latency ≈ 64e6 / 273e9 ≈ 0.23 ms.",
+        "Practical implication: for LLM inference on M4 Pro, the bottleneck is memory bandwidth for most operations (attention at small batch, all elementwise ops, layer norms). Only large matmuls (d_model ≥ 2048, batch ≥ 8) are compute-bound. This is why quantization (reducing bytes transferred) is so effective on Apple Silicon — it directly addresses the memory-bandwidth bottleneck.",
+        "M4 Pro unified memory advantage: the 273 GB/s bandwidth is shared between CPU and GPU with no PCIe overhead. On CUDA systems, the effective bandwidth for LLM inference is limited by PCIe (64 GB/s for PCIe 5.0 × 16) when data must move between CPU and GPU. For inference-only workloads on Apple Silicon, the full 273 GB/s is available to the GPU."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Saying 'larger models are always memory-bandwidth-bound'. Large MATMULS (M=N=K ≥ 2048) are COMPUTE-BOUND on M4 Pro because their arithmetic intensity (AI ≈ 714 FLOPs/byte) far exceeds the ridge point (52 FLOPs/byte). It's the ELEMENTWISE and REDUCTION operations (RMSNorm, softmax, attention at small batch) that are memory-bandwidth-bound.",
+      "references": [
+        "https://developer.apple.com/documentation/metal/gpu_counters_and_counter_sample_buffers",
+        "https://arxiv.org/abs/2205.14135",
+        "https://www.apple.com/mac/m4-pro/"
+      ],
+      "added_in": ""
+    },
+    {
+      "id": "nb10-q06",
+      "notebook": "10_metal_custom_kernels.ipynb",
+      "section": "2024-2026 frontier for custom GPU kernels on Apple Silicon",
+      "difficulty": "research",
+      "roles": [
+        "research_engineer",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "mlx",
+        "metal",
+        "flash-attention",
+        "apple-silicon",
+        "frontier",
+        "2024-2026"
+      ],
+      "question": "What are the key advances in custom GPU kernel development for Apple Silicon in 2024-2026? How does MLX's Metal kernel infrastructure compare to CUDA's ecosystem (cuBLAS, cuDNN, Triton)? What remains unsolved?",
+      "answer_key_points": [
+        "MLX Metal kernel infrastructure (2024-2025): MLX exposes `mx.fast.metal_kernel` for custom MSL kernels from Python. The MLX team has implemented FlashAttention-2-style tiled attention in Metal (used in `mlx_lm` for inference), quantized matmul kernels (4-bit and 8-bit), and fused RMSNorm+QKV projection. The kernel library is open-source at github.com/ml-explore/mlx.",
+        "FlashAttention on Metal (2024): MLX implements a tiled attention kernel that avoids materializing the full T×T attention matrix. Uses threadgroup memory for K/V tiles and SIMD-group reductions for the online softmax normalization. Achieves ~2-3× speedup over naive attention at T=2048 on M4 Pro. The implementation uses `simdgroup_matrix_multiply_accumulate` for the QK^T and AV matmuls.",
+        "Triton vs Metal: Triton (OpenAI, 2019-2024) is a Python-embedded DSL for CUDA kernels that auto-tunes tile sizes and generates PTX. Metal has no equivalent — MSL kernels must be hand-tuned. The MLX team is developing a Metal backend for Triton (2024-2025) that would allow Triton programs to compile to MSL, enabling the same kernel to run on NVIDIA and Apple Silicon.",
+        "AMX coprocessor (Apple Matrix Accelerator): M-series chips have a dedicated matrix multiply unit (AMX) accessible via `simdgroup_matrix_multiply_accumulate` in MSL. AMX operates on 8×8 tiles of fp16/bf16/fp32. Peak throughput: ~14 TFLOPS fp32 on M4 Pro. This is the hardware that makes MLX's matmul kernels competitive with cuBLAS on NVIDIA GPUs at the same power envelope.",
+        "Unsolved problems: (1) No Triton-equivalent for Metal — kernel development requires hand-written MSL, which is slower to iterate than Triton's Python DSL. (2) No profiling tools as mature as NVIDIA Nsight — Metal GPU Frame Capture is useful but lacks the kernel-level roofline analysis of Nsight Compute. (3) Multi-GPU (multi-die) Metal kernels are not yet supported in MLX — each M4 Max/Ultra die is a separate Metal device. (4) Dynamic shapes in Metal kernels require recompilation — MLX's JIT compilation handles this but adds latency for the first call with a new shape.",
+        "Practical recommendation for 2025: for LLM inference on Apple Silicon, use MLX's built-in kernels (they're already optimized for M-series AMX). Write custom Metal kernels only for operations not covered by MLX (e.g., custom attention variants, sparse operations). Use `mx.compile` to fuse elementwise ops and reduce kernel launch overhead. Profile with Metal GPU Frame Capture to identify memory-bandwidth vs compute bottlenecks."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Saying 'MLX is just PyTorch for Apple Silicon'. MLX's key differentiator is UNIFIED MEMORY — arrays live in a single address space shared by CPU and GPU, with zero-copy semantics. PyTorch MPS (Metal Performance Shaders) backend still copies tensors between CPU and GPU memory. MLX's lazy evaluation + unified memory + Metal kernel integration is a fundamentally different execution model.",
+      "references": [
+        "https://github.com/ml-explore/mlx",
+        "https://arxiv.org/abs/2312.11514",
+        "https://openai.com/research/triton",
+        "https://developer.apple.com/documentation/accelerate/amx"
+      ],
+      "added_in": ""
     }
   ]
 }
