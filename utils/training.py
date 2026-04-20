@@ -233,8 +233,8 @@ def evaluate(
         if len(val_data) <= seq_len + 1:
             break
         ix = np.random.randint(0, len(val_data) - seq_len, size=(batch_size,))
-        x = mx.stack([val_data[i : i + seq_len] for i in ix])
-        y = mx.stack([val_data[i + 1 : i + seq_len + 1] for i in ix])
+        x = mx.stack([val_data[int(i) : int(i) + seq_len] for i in ix])
+        y = mx.stack([val_data[int(i) + 1 : int(i) + seq_len + 1] for i in ix])
         logits = model(x)
         loss = nn.losses.cross_entropy(logits, y, reduction="mean")
         mx.eval(loss)

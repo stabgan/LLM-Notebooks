@@ -1501,6 +1501,236 @@
         "https://arxiv.org/abs/2408.00118"
       ],
       "added_in": "15d7431989bb20f2985f8c126dbd1ff7d4636600"
+    },
+    {
+      "id": "nb07-q01",
+      "notebook": "07_building_gpt_from_scratch.ipynb",
+      "section": "Temperature sampling — derivation",
+      "difficulty": "warmup",
+      "roles": [
+        "mle",
+        "research_engineer"
+      ],
+      "topic_tags": [
+        "sampling",
+        "temperature",
+        "softmax"
+      ],
+      "question": "Derive the softmax-temperature formula `softmax(logits / T)`. What do T→0 and T→∞ limits give you, and what's the typical T range for (a) creative writing, (b) code generation, (c) deterministic extraction?",
+      "answer_key_points": [
+        "softmax(x/T)_i = exp(x_i / T) / Σ_j exp(x_j / T); T scales the raw logits before normalization.",
+        "T→0+: exponent ratios blow up, largest logit dominates → one-hot at argmax (greedy).",
+        "T→∞: x/T→0, exp(0)=1, distribution → uniform over vocab (random).",
+        "T=1: the model's native distribution (what it was trained to emit).",
+        "Typical ranges: creative writing T∈[0.7,1.0]; code T∈[0.0,0.4]; extraction T≤0.1 (or greedy).",
+        "Interacts with top-p/top-k: temperature scales logits BEFORE truncation; production chat defaults are T=0.8, top_p=0.95. Stable implementation: max-subtract before dividing by T to avoid bf16 overflow."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Saying 'T=0 is random'. Quite the opposite — T→0 is fully deterministic (greedy). T→∞ is random.",
+      "references": [
+        "https://platform.openai.com/docs/guides/text-generation",
+        "https://arxiv.org/abs/1904.09751"
+      ],
+      "added_in": "4a746edbd2dd99e3c82c12db48577f05f24dcad1"
+    },
+    {
+      "id": "nb07-q02",
+      "notebook": "07_building_gpt_from_scratch.ipynb",
+      "section": "Generation strategies compared",
+      "difficulty": "core",
+      "roles": [
+        "mle",
+        "research_engineer",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "greedy",
+        "top-k",
+        "top-p",
+        "beam-search"
+      ],
+      "question": "Compare greedy, top-k, top-p (nucleus), and beam search decoding. Write the math for each and explain when each wins and loses.",
+      "answer_key_points": [
+        "Greedy: argmax(logits). O(1). Deterministic; fails on open-ended generation (loops, low diversity).",
+        "Top-k: keep top-k logits, zero rest, renormalize, sample. Fixed cardinality. Fails when right distribution is FLAT (many equally-likely tokens).",
+        "Top-p (nucleus): sort descending, find smallest subset with cumulative prob ≥ p, sample from that nucleus. Adapts cardinality to distribution sharpness — 2024 chat default.",
+        "Beam search: maintain B parallel hypotheses; expand and prune by cumulative log-prob. Degenerates on open-ended generation ('beam search curse'); still used for translation/summarization.",
+        "Production defaults (2024): chat T∈[0.7,0.8], top_p∈[0.9,0.95], top_k=0; code T∈[0.1,0.3]; beam B=4-8 for translation only.",
+        "Top-p at p=1.0 reduces to plain temperature sampling; top-k at k=|V| is no filtering; greedy is top-1."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Claiming 'beam search always finds the best output'. It finds the HIGHEST-LIKELIHOOD sequence, which often correlates NEGATIVELY with human quality on open-ended tasks.",
+      "references": [
+        "https://arxiv.org/abs/1805.04833",
+        "https://arxiv.org/abs/1904.09751",
+        "https://arxiv.org/abs/2004.10450"
+      ],
+      "added_in": "4a746edbd2dd99e3c82c12db48577f05f24dcad1"
+    },
+    {
+      "id": "nb07-q03",
+      "notebook": "07_building_gpt_from_scratch.ipynb",
+      "section": "KV-cache memory formula",
+      "difficulty": "core",
+      "roles": [
+        "mle",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "kv-cache",
+        "memory",
+        "gqa"
+      ],
+      "question": "Derive the KV-cache memory formula `2 · L · T · n_kv_heads · d_head · bytes`. At LLaMA-3-8B (L=32, n_heads=32, n_kv_heads=8, d_head=128) with T=128k, bf16, single sequence, how many bytes? Why does this become the dominant memory cost at long context?",
+      "answer_key_points": [
+        "Per (token, layer): 2 tensors (K and V), each shape (n_kv_heads, d_head). Bytes: 2 · n_kv_heads · d_head · bytes_per_elem.",
+        "Across all L layers and T tokens: 2 · L · T · n_kv_heads · d_head · bytes per sequence.",
+        "Concrete LLaMA-3-8B at T=128k, bf16: 2 · 32 · 131072 · 8 · 128 · 2 = 17,179,869,184 bytes = 16 GiB per single sequence. Larger than the 8B model weights.",
+        "Scaling: LINEAR in T but with large constant. At short context (T=2k) cache is ~256 MiB (negligible); at T=128k it's 16 GiB (dominant); at T=1M it's 128 GiB (needs multi-GPU or compression).",
+        "GQA (n_kv_heads < n_heads) is the key saving: MHA at n_kv_heads=32 would be 4× larger (64 GiB at 128k for LLaMA-3-8B). GQA is the single most impactful long-context architecture change of 2023-2024.",
+        "Production mitigations: PagedAttention (fragmentation), prefix caching (share across requests), quantized KV (int8/int4 cuts another 2-4×), MLA (DeepSeek-V3 — ~10× smaller than GQA)."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Forgetting the factor of 2 (K and V stored separately) or using n_heads instead of n_kv_heads in GQA models — overestimates cache size by 4-8× on modern models.",
+      "references": [
+        "https://ai.meta.com/blog/meta-llama-3/",
+        "https://arxiv.org/abs/2305.13245",
+        "https://arxiv.org/abs/2309.06180"
+      ],
+      "added_in": "4a746edbd2dd99e3c82c12db48577f05f24dcad1"
+    },
+    {
+      "id": "nb07-q04",
+      "notebook": "07_building_gpt_from_scratch.ipynb",
+      "section": "Repetition penalties compared",
+      "difficulty": "core",
+      "roles": [
+        "mle",
+        "research_engineer"
+      ],
+      "topic_tags": [
+        "repetition-penalty",
+        "sampling",
+        "n-gram"
+      ],
+      "question": "Compare three repetition-control mechanisms: n-gram blocking, HuggingFace-style `repetition_penalty`, and frequency/presence penalty (OpenAI). Write the math for each, and explain when each fails.",
+      "answer_key_points": [
+        "n-gram blocking: force logit=-∞ for tokens that would complete a repeated n-gram of size k. Hard constraint; fails on legitimate repetition (poetry, code, JSON keys).",
+        "Repetition penalty (Keskar et al. 2019 / HF): logit[t] = logit[t] / penalty (positive) or logit[t] * penalty (negative) for tokens in history. Applied BEFORE softmax. Fails because all prior tokens weighted equally.",
+        "Frequency + presence (OpenAI): logit[t] -= frequency_penalty · count(t) + presence_penalty · indicator(t appears). Decouples 'how often' from 'at all'; additive.",
+        "Unsolved fail modes: semantic repetition (paraphrasing), positional repetition (every k tokens), high-entropy loops (cycling through 3-4 tokens each below threshold).",
+        "Production stacks combine: typical chat = presence_penalty=1.0, frequency_penalty=0.2 (vLLM, SGLang).",
+        "2024 alternatives: DoLa (contrastive decoding), Mirostat (adaptive perplexity target), min-p (probability ratio relative to max_prob)."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Applying `repetition_penalty` AFTER softmax instead of to raw logits. Breaks the probability simplex; every correct implementation modifies logits BEFORE softmax.",
+      "references": [
+        "https://arxiv.org/abs/1909.05858",
+        "https://platform.openai.com/docs/guides/text-generation",
+        "https://arxiv.org/abs/2309.03883"
+      ],
+      "added_in": "4a746edbd2dd99e3c82c12db48577f05f24dcad1"
+    },
+    {
+      "id": "nb07-q05",
+      "notebook": "07_building_gpt_from_scratch.ipynb",
+      "section": "Prefill vs decode",
+      "difficulty": "stretch",
+      "roles": [
+        "research_engineer",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "prefill",
+        "decode",
+        "batching",
+        "roofline"
+      ],
+      "question": "Why is prefill compute-bound (O(B·T²·d)) but decode memory-bandwidth-bound (O(L·T·n_kv_heads·d_head))? What does this imply for batching strategy?",
+      "answer_key_points": [
+        "Prefill: all T prompt tokens in one forward pass. Attention O(T²) compute per layer; matmul saturates tensor cores. High arithmetic intensity → compute-bound.",
+        "Decode (step t=N+1): one new query attends to full T-token KV cache. Per step: read entire cache (O(L·T·n_kv_heads·d_head·bytes)) → BELOW the ridge point → memory-bandwidth-bound.",
+        "At LLaMA-3-70B, T=8k, bf16: prefill ~560 TFLOPs (~1s on H100); decode ~40 GiB/step HBM reads (~40ms at 1 TB/s).",
+        "Batching implications: decode is bandwidth-bound → stacking sequences is nearly free (same KV reads, more queries). Prefill is compute-bound → batching linearly increases TTFT per request.",
+        "Optimal: LARGE decode batches (continuous batching); SMALL/CHUNKED prefill batches (chunked prefill, vLLM v1 default). Break long prompt into chunks, interleave with decode — only way to serve long-context at high throughput.",
+        "Hardware choice: decode workloads → M4 Max (546 GB/s) hits ~40% of H100 per seq at 1/50 power; prefill-dominated → H100 wins on compute (20× bf16 FLOPs)."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Saying 'decode is also O(T²) because attention is O(T²)'. Per-step decode is ONLY O(T) — single new query attends to T cached keys. Cumulative is O(T²) but each step is linear.",
+      "references": [
+        "https://arxiv.org/abs/2309.06180",
+        "https://arxiv.org/abs/2211.17192",
+        "https://docs.vllm.ai/en/latest/design/v1/v1_design.html"
+      ],
+      "added_in": "4a746edbd2dd99e3c82c12db48577f05f24dcad1"
+    },
+    {
+      "id": "nb07-q06",
+      "notebook": "07_building_gpt_from_scratch.ipynb",
+      "section": "TTFT & long-context serving",
+      "difficulty": "stretch",
+      "roles": [
+        "mle",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "ttft",
+        "chunked-prefill",
+        "prefix-cache",
+        "rag"
+      ],
+      "question": "What is TTFT (time-to-first-token) and why does it explode at long context? Explain chunked prefill, prefix caching, and why a RAG system with a 32k-token system prompt needs both.",
+      "answer_key_points": [
+        "TTFT: wall-clock from request arrival to first output token. Dominated by PREFILL. Quadratic in prompt length: ~2·T²·P/FLOPs_per_sec.",
+        "Numerical floor at LLaMA-3-70B: T=8k≈ 1-2s; T=32k≈ 16-32s; T=128k≈ 2-5 minutes. User-visible pause at frontier context.",
+        "Chunked prefill (vLLM v1, SGLang): split prompt into chunks of ~512 tokens, interleave with decode steps. TTFT after ceil(T/C) chunks instead of O(T²).",
+        "Prefix caching (vLLM enable_prefix_caching, SGLang RadixAttention): persist KV for reused prefix. Subsequent requests skip prefill. TTFT drops to delta-tokens cost. Cache-hit rate is #1 operational metric for RAG; 90→99% improvement often doubles throughput.",
+        "RAG with 32k system prompt needs BOTH: prefix caching for 95%+ hit rate on system prompt; chunked prefill for first-time (cache-miss) long prefill so server stays responsive.",
+        "Correctness: cache keyed by token hash (tokenizer-dependent). Position ids must start from 0 for prefix, continue from len(prefix) for new tokens — off-by-one here is the silent-wrong bug."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Conflating TTFT with TPOT. Orthogonal metrics with different bottlenecks: TTFT → prefill (chunking, caching, smaller batches); TPOT → decode (continuous batching, KV compression).",
+      "references": [
+        "https://docs.vllm.ai/en/latest/features/automatic_prefix_caching.html",
+        "https://lmsys.org/blog/2024-01-17-sglang/",
+        "https://arxiv.org/abs/2308.16369"
+      ],
+      "added_in": "4a746edbd2dd99e3c82c12db48577f05f24dcad1"
+    },
+    {
+      "id": "nb07-q07",
+      "notebook": "07_building_gpt_from_scratch.ipynb",
+      "section": "Decode-time acceleration frontier",
+      "difficulty": "research",
+      "roles": [
+        "research_engineer",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "speculative-decoding",
+        "medusa",
+        "eagle",
+        "frontier"
+      ],
+      "question": "Explain the 2024–2026 frontier on decode-time acceleration: speculative decoding, Medusa, EAGLE-2, Kangaroo early-exit, and vLLM v1. What's the common theme and what's the open problem?",
+      "answer_key_points": [
+        "Common theme: decode is memory-bandwidth-bound. Generate multiple tokens per forward pass without re-reading cache → throughput multiplies.",
+        "Speculative decoding (Leviathan/Chen 2023): small draft proposes k tokens; target verifies all in one pass; accept m≤k that match greedy. LOSSLESS. 2-3× on chat with 8B drafter + 70B target.",
+        "Medusa (2024) / EAGLE-2 (2024): Medusa adds extra decoder heads on target for tree-verification; EAGLE predicts next HIDDEN STATE for higher acceptance (~80%). Production default in SGLang spec-decode.",
+        "Kangaroo (2024): early-exit-based; periodically consult 'exit' head during target's forward pass. Dynamic compute allocation; no draft model needed.",
+        "vLLM v1 (2025): packages chunked prefill + continuous batching + prefix cache + spec-decode. 4-8× cumulative throughput vs 2023 naive serving.",
+        "Open problem: all assume MOSTLY-DETERMINISTIC output. Temperature > 0.7 or top-p < 0.9 collapses acceptance rates below 50%. Reasoning models (o1, R1) with high-entropy CoT hardest to accelerate.",
+        "Correctness invariant: output distribution MUST exactly match target's. Leviathan 2023 proves via rejection-sampling construction. Spec-decode that changes output distribution is BROKEN."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Thinking spec-decode trades quality for speed. It's LOSSLESS for the target distribution — output provably identical to running target alone. Only latency changes.",
+      "references": [
+        "https://arxiv.org/abs/2211.17192",
+        "https://arxiv.org/abs/2401.10774",
+        "https://arxiv.org/abs/2406.16858",
+        "https://docs.vllm.ai/en/latest/design/v1/v1_design.html"
+      ],
+      "added_in": "4a746edbd2dd99e3c82c12db48577f05f24dcad1"
     }
   ]
 }
