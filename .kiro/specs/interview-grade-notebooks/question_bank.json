@@ -1731,6 +1731,248 @@
         "https://docs.vllm.ai/en/latest/design/v1/v1_design.html"
       ],
       "added_in": "4a746edbd2dd99e3c82c12db48577f05f24dcad1"
+    },
+    {
+      "id": "nb08-q01",
+      "notebook": "08_training_apple_silicon.ipynb",
+      "section": "Cosine vs linear LR schedule — derivation",
+      "difficulty": "warmup",
+      "roles": [
+        "mle",
+        "research_engineer"
+      ],
+      "topic_tags": [
+        "lr-schedule",
+        "cosine",
+        "linear",
+        "decay"
+      ],
+      "question": "Derive the cosine LR schedule formula `lr_t = lr_min + 0.5·(lr_max - lr_min)·(1 + cos(π·t/T))` from first principles. Why does cosine outperform linear decay in practice on modern LLMs?",
+      "answer_key_points": [
+        "Goal: design a smooth monotone-decreasing LR schedule that starts at lr_max and ends at lr_min over T steps, with derivative zero at both endpoints so the optimizer doesn't 'jerk' at t=0 or t=T. Linear decay has constant derivative -(lr_max-lr_min)/T — large and abrupt at both ends. Cosine's derivative is zero at endpoints (because d/dt[cos(π·t/T)] = -(π/T)·sin(π·t/T), zero when sin=0, i.e. t=0 and t=T).",
+        "Derive the formula: parameterize `lr_t = lr_min + A·(1 + cos(π·t/T))` for some amplitude A. At t=0: cos(0)=1, so `lr_0 = lr_min + 2A`. We want lr_0 = lr_max ⇒ A = (lr_max - lr_min)/2. Substitute: `lr_t = lr_min + 0.5·(lr_max - lr_min)·(1 + cos(π·t/T))`. At t=T: cos(π)=-1 ⇒ `lr_T = lr_min + 0 = lr_min`. QED.",
+        "Why cosine beats linear in practice: the SHAPE matches the 'exploration → exploitation' curve optimal-learning theory argues for. Early (t ≈ 0): LR stays near lr_max for longer than linear (slow decay phase) — the model can still take large optimization steps during the wide-basin-exploration phase. Late (t ≈ T): LR stays near lr_min for longer than linear (slow approach) — fine-grained convergence near the minimum. Middle: fast transition through the 'explore→exploit' inflection point.",
+        "Empirical evidence: Loshchilov & Hutter 2017 (SGDR) showed cosine beats both linear and step-decay on CIFAR-10/ImageNet at matched compute. Kaplan et al. 2020 and Chinchilla (Hoffmann 2022) adopted cosine decay as the LLM-scaling default. LLaMA, LLaMA-2, LLaMA-3, Mistral, DeepSeek-V3 all use cosine. Linear decay (used in OG BERT) is the legacy default — cosine is the 2020+ frontier.",
+        "Typical settings (2024 LLM pretraining): lr_max ≈ 3e-4 to 6e-4 for AdamW, lr_min = 0.1·lr_max (i.e., decay to 10% of peak, not 0% — DOESN'T kill gradient signal at end), T = total training steps. Chinchilla-optimal training uses T set so the FINAL few % of steps do the fine-grained convergence at near-zero LR.",
+        "Corollary: the 'slow final decay' at t≈T is why 'continued training' (restart cosine with smaller lr_max) works — you're jumping back to the explore phase with a smaller budget. Warm-restarts (SGDR) use this explicitly; modern continued-pretraining runs (LLaMA-3 checkpoint → instruction-tune) implicitly use it.",
+        "Common variant: cosine WITH WARMUP — combine linear warmup from 0 to lr_max for the first ~1-2% of training, then cosine-decay from lr_max to lr_min over the remainder. Standard modern LLM LR schedule. See q05 for why warmup is essential."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Saying 'cosine is smoother so it trains faster'. Linear decay is ALSO smooth (C^∞ on the interior) — the difference isn't smoothness, it's the specific SHAPE: zero derivative at endpoints plus asymmetric time-spent-per-phase. 'Smoother' is too vague to be the right answer.",
+      "references": [
+        "https://arxiv.org/abs/1608.03983",
+        "https://arxiv.org/abs/2001.08361",
+        "https://arxiv.org/abs/2203.15556"
+      ],
+      "added_in": "74933dd2761d793ea411f24c228c4a90b5fcdd2d"
+    },
+    {
+      "id": "nb08-q02",
+      "notebook": "08_training_apple_silicon.ipynb",
+      "section": "Adam → AdamW — derivation and decoupled weight decay",
+      "difficulty": "core",
+      "roles": [
+        "mle",
+        "research_engineer",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "adam",
+        "adamw",
+        "weight-decay",
+        "optimizer",
+        "derivation"
+      ],
+      "question": "Derive the Adam update rule from first principles (β1, β2, ε, bias correction). Why does AdamW's decoupled weight decay replace L2 regularization on modern LLMs — what specifically was wrong with Adam+L2?",
+      "answer_key_points": [
+        "Adam (Kingma & Ba 2014) maintains two running statistics: 1st moment `m_t` (momentum-like mean of gradients) and 2nd moment `v_t` (uncentered variance of gradients). Updates: `m_t = β1·m_{t-1} + (1-β1)·g_t`, `v_t = β2·v_{t-1} + (1-β2)·g_t²` — exponential moving averages with decay rates β1, β2 (defaults 0.9, 0.999).",
+        "Bias correction: at t=0, `m_0 = v_0 = 0` so the EMAs are biased toward zero early in training. Corrected estimates: `m̂_t = m_t/(1-β1^t)`, `v̂_t = v_t/(1-β2^t)`. At t=1, β1=0.9: `m̂_1 = m_1/(1-0.9) = 10·m_1` — compensates for the 0-initialized EMA. Bias correction matters for the first ~1/(1-β) steps (~10 for β=0.9, ~1000 for β=0.999).",
+        "Update: `θ_t = θ_{t-1} - lr · m̂_t / (sqrt(v̂_t) + ε)`. The `sqrt(v̂_t)` term is the per-parameter ADAPTIVE scaling — parameters with consistently-large gradients get smaller effective LR, parameters with small/noisy gradients get larger. `ε` (default 1e-8) is a numerical floor preventing division-by-zero when v̂_t is tiny.",
+        "Adam + L2 regularization (the buggy original): `g_t ← g_t + λ·θ_{t-1}` (add L2 grad to the raw gradient BEFORE Adam processes it). Problem: Adam's adaptive scaling `/ sqrt(v̂_t)` RESCALES the L2 term too — parameters with large gradients get less regularization than they should. The regularization effectively depends on GRADIENT MAGNITUDE instead of PARAMETER MAGNITUDE — backwards from what L2 should do.",
+        "AdamW fix (Loshchilov & Hutter 2019): DECOUPLE weight decay from the adaptive update. New rule: `θ_t = θ_{t-1} - lr · (m̂_t / (sqrt(v̂_t) + ε) + λ·θ_{t-1})`. Equivalent to `θ_t = (1 - lr·λ)·θ_{t-1} - lr·(Adam step)`. Weight decay is now a direct multiplicative shrinkage on θ — NO adaptive rescaling — exactly as SGD+L2 would have it.",
+        "Empirical win of AdamW: on CIFAR/ImageNet/WMT/OpenAI GPT experiments, AdamW closes the Adam-vs-SGD generalization gap. Hugely consequential: every 2020+ LLM ships AdamW. PyTorch's `torch.optim.AdamW` is the default; TensorFlow's `tfa.optimizers.AdamW` is equivalent. MLX ships `mlx.optimizers.AdamW`.",
+        "Typical hyperparameters for LLM AdamW: lr ∈ [1e-4, 6e-4] (smaller for bigger models), β1=0.9, β2=0.95 (NOT 0.999 — lower β2 for faster adaptation; OpenAI and DeepSeek-V3 use 0.95), ε=1e-8, weight_decay=0.1 for dense transformers (excluding bias and norm-γ params — see q06 debug for why)."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Saying 'AdamW is just Adam with weight decay'. Adam ALREADY supported L2 regularization via gradient injection — that was the BUGGY form. AdamW's contribution is DECOUPLING weight decay from the adaptive update. Confusing 'has weight decay' with 'has DECOUPLED weight decay' is the textbook mistake.",
+      "references": [
+        "https://arxiv.org/abs/1412.6980",
+        "https://arxiv.org/abs/1711.05101",
+        "https://arxiv.org/abs/2006.08643"
+      ],
+      "added_in": "74933dd2761d793ea411f24c228c4a90b5fcdd2d"
+    },
+    {
+      "id": "nb08-q03",
+      "notebook": "08_training_apple_silicon.ipynb",
+      "section": "Gradient clipping — value vs global-norm",
+      "difficulty": "core",
+      "roles": [
+        "mle",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "grad-clipping",
+        "norm-clipping",
+        "training-stability"
+      ],
+      "question": "Compare value clipping vs global-norm clipping of gradients. Derive the global-norm formula `g ← g · min(1, max_norm / ||g||)`. What's a typical `max_norm` for LLM pretraining, and why that number?",
+      "answer_key_points": [
+        "Problem gradient clipping solves: individual gradient values (or per-tensor gradient norms) can spike to very large magnitudes during training — one noisy batch, one layer-norm bug, one activation explosion. A single unclipped update can knock the optimizer's running statistics (Adam's v_t) out of the reasonable range, causing CASCADING instability for the next ~1000 steps while β2 EMAs recover.",
+        "Value clipping: `g_i ← clip(g_i, -c, c)` per element. Pros: trivial to implement, O(numel) with no reduction. Cons: DESTROYS gradient DIRECTION — the clipped vector no longer points the same way as the pre-clip gradient. If a single dimension spikes, only that dimension is clipped, but the model loses the consistent-direction information from the rest. Rarely used in modern LLM training.",
+        "Global-norm clipping: treat all gradients across all parameters as ONE big flat vector `g`, compute `||g||_2 = sqrt(Σ g_i²)`, scale UNIFORMLY if the global norm exceeds max_norm: `g ← g · min(1, max_norm / ||g||)`. PRESERVES the gradient direction — every component scales by the same factor ||g||/max_norm when clipping fires. This is the invariant that makes global-norm clipping 'safe' for adaptive optimizers like Adam.",
+        "Derivation: we want to find a scaling factor s such that the clipped gradient `g_clipped = s·g` has `||g_clipped|| ≤ max_norm`. Two cases: (a) if `||g|| ≤ max_norm`: no clipping needed, s=1. (b) if `||g|| > max_norm`: choose s = max_norm/||g|| so `||s·g|| = s·||g|| = max_norm`. Combined: `s = min(1, max_norm/||g||)` ⇒ `g ← g · min(1, max_norm/||g||)`.",
+        "Typical `max_norm` for LLM pretraining: **1.0 is the standard** (GPT-3, LLaMA, Mistral, DeepSeek-V3 all clip at 1.0). Why this number: AdamW's update magnitude is ~lr·(m̂/sqrt(v̂)) ≈ lr (because m̂/sqrt(v̂) ≈ 1.0 on unit-normalized statistics); with lr=3e-4 and 8B params, an unclipped step's L2 norm can approach ~sqrt(8e9)·3e-4 ≈ 27 in the worst case — far above 'safe'. Clipping to 1.0 bounds the update magnitude to something that won't destabilize the optimizer.",
+        "When it's HIGHER: some 100B+ models clip at 0.5 or 0.3 (more conservative, trades occasional lost-signal for stability). Some MoE models clip at 2.0 or 5.0 (routing fluctuations need larger per-step moves). PPO/RLHF fine-tuning typically clips at 0.5-1.0 with a smaller effective batch.",
+        "Implementation detail: compute global norm via `sqrt(sum of per-tensor squared norms)` so it parallelizes cleanly across workers. All_reduce the sum-of-squares → sqrt on each worker → same scale factor applied uniformly. MLX: `mx.clip(grads, ...)` for value-clip; `optax.clip_by_global_norm` (PyTorch: `torch.nn.utils.clip_grad_norm_`) for norm-clip — `mlx.optimizers` applies norm clip at the optimizer level."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Clipping EACH parameter tensor's norm independently instead of the GLOBAL norm. Per-tensor clipping destroys the relative direction between parameters (some clipped by 2×, some by 10×) — effectively the same problem as value clipping. Global norm is the only safe option for adaptive optimizers.",
+      "references": [
+        "https://arxiv.org/abs/1211.5063",
+        "https://arxiv.org/abs/2005.14165",
+        "https://pytorch.org/docs/stable/generated/torch.nn.utils.clip_grad_norm_.html"
+      ],
+      "added_in": "74933dd2761d793ea411f24c228c4a90b5fcdd2d"
+    },
+    {
+      "id": "nb08-q04",
+      "notebook": "08_training_apple_silicon.ipynb",
+      "section": "Mixed-precision training — bf16 vs fp16",
+      "difficulty": "core",
+      "roles": [
+        "mle",
+        "research_engineer"
+      ],
+      "topic_tags": [
+        "mixed-precision",
+        "bf16",
+        "fp16",
+        "loss-scaling"
+      ],
+      "question": "Compare bf16 vs fp16 mixed-precision training. Why does fp16 need dynamic loss scaling but bf16 does not? Walk the NaN-recovery protocol for fp16 loss scaling.",
+      "answer_key_points": [
+        "The two 16-bit formats: fp16 = IEEE-754 half (1 sign, 5 exponent, 10 mantissa), dynamic range ~6e-5 to 65504. bf16 = 'brain-float' (1 sign, 8 exponent, 7 mantissa), dynamic range ~1e-38 to 3.4e38 — SAME range as fp32 but 3 fewer mantissa bits.",
+        "Key difference: bf16 has fp32's EXPONENT range but fp16 has a much narrower range. Gradients in deep networks span 10+ orders of magnitude (from ~1e-10 at late layers to ~1e2 at attention softmax pre-norm). fp16 CAN'T REPRESENT the small gradients — they underflow to zero, silently destroying learning signal on some parameters.",
+        "Why fp16 needs LOSS SCALING: multiply the loss by a large scale factor S (typically 2^15 = 32768) BEFORE backward. This multiplies every gradient by S, shifting them up into fp16's representable range. After backward, DIVIDE gradients by S (in fp32 or via math that preserves precision) before the optimizer step. Key idea: preserve the gradient's INFORMATION CONTENT by shifting to a representable range.",
+        "DYNAMIC loss scaling: start with S=2^24 = 16M. Each step, check if any gradient is inf/NaN (fp16 overflow). If yes: scale didn't work, DIVIDE S by 2 and SKIP the step. If no: every ~2000 steps, multiply S by 2 (try a bigger scale next time, reclaim mantissa bits). Converges to the largest S that doesn't overflow — typically stabilizes at 2^15 to 2^18 for LLM pretraining.",
+        "Why bf16 SKIPS loss scaling: with the same exponent range as fp32, no gradients underflow to zero or overflow to inf in normal training. The 3 mantissa bits LOST vs fp16 mean slightly less precision on the significand (7 bits ~2 decimal digits vs fp16's 10 bits ~3 digits) — but this is usually fine because the reduction to fp32 for the optimizer state recovers it. bf16 is the DEFAULT for 2023+ LLM pretraining on H100/A100/M-series.",
+        "NaN-recovery protocol for fp16: (a) detect inf/NaN in any gradient after backward (all_reduce an OR); (b) if detected: SKIP this optimizer step (don't update θ or Adam's m_t, v_t), DIVIDE loss_scale by 2, and continue; (c) if not: check if >2000 steps since last inf — if so, MULTIPLY loss_scale by 2 and continue; (d) always keep an fp32 master copy of params — the fp16 params during forward are casts OF the fp32 master.",
+        "Hardware support: NVIDIA A100/H100 support both fp16 and bf16 via tensor cores at equal throughput. Apple Silicon M-series: bf16 support is native in Metal and MLX via `mx.bfloat16`; fp16 also supported. For MLX-LM training on M-series, use bf16 — no loss scaling needed, simpler code, same throughput."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Saying 'bf16 and fp16 are both 16-bit so they're the same'. They have DIFFERENT exponent/mantissa allocations (8/7 vs 5/10). bf16's fp32-like exponent range is EVERYTHING — it's why bf16 works without loss scaling and fp16 doesn't. Don't lump them.",
+      "references": [
+        "https://arxiv.org/abs/1710.03740",
+        "https://cloud.google.com/tpu/docs/bfloat16",
+        "https://docs.nvidia.com/deeplearning/performance/mixed-precision-training/"
+      ],
+      "added_in": "74933dd2761d793ea411f24c228c4a90b5fcdd2d"
+    },
+    {
+      "id": "nb08-q05",
+      "notebook": "08_training_apple_silicon.ipynb",
+      "section": "Learning-rate warmup — why essential for transformers",
+      "difficulty": "stretch",
+      "roles": [
+        "research_engineer",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "lr-warmup",
+        "adam",
+        "radam",
+        "variance",
+        "transformer-training"
+      ],
+      "question": "Why is LR warmup essential for transformer training? Explain the interaction with Adam's second-moment estimate (β2), and derive the 'adaptive learning rate variance' argument from Liu et al. 2020 (RAdam).",
+      "answer_key_points": [
+        "Problem: training a transformer at full lr_max from step 0 causes loss spikes, NaN activations, or silent divergence in the first ~1000 steps. This is specific to ADAPTIVE optimizers (Adam, AdamW) — SGD with momentum doesn't need warmup (though it benefits slightly). LR warmup = linearly ramp from 0 to lr_max over the first W steps (typically 1-2% of total).",
+        "Root cause (Liu et al. 2020, RAdam paper): at step t, Adam's v_t is `(1-β2)·Σ β2^(t-k)·g_k²` — an EMA of past squared gradients. With β2=0.999, the 'effective window' is ~1/(1-β2) = 1000 steps. Early on (t < 1000): v_t has seen very few samples, so `sqrt(v̂_t)` is a HIGH-VARIANCE estimate of the true second moment. High variance ⇒ some parameters get lr/0.01=100× while others get lr/100=0.01× — wildly different effective LRs.",
+        "Adaptive learning rate variance: `Var(lr_effective) = Var(lr / sqrt(v̂_t))` is high at small t. Liu et al. 2020 compute this analytically: `Var(1/sqrt(v̂_t))` diverges as t→0 unless v̂_t has accumulated enough samples (roughly `t > 4/(1-β2)` ≈ 4000 steps for β2=0.999). Conclusion: for the first ~4k steps, Adam's adaptive LR is so noisy it's effectively random.",
+        "Why warmup fixes this: during the first W steps, lr is SMALL (near 0, linearly ramping up). Even if Adam's adaptive scaling is noisy, `lr · (noisy adaptive scale)` is bounded because lr is small. By the time lr reaches lr_max, v̂_t has accumulated enough samples to be a low-variance estimator — the effective LR is the target lr_max uniformly across parameters.",
+        "RAdam fix (Liu 2020): analytically derive the correct 'rectification' term that transforms v̂_t into a bias-corrected estimate usable from step 0. For t < 5 (rough threshold): fall back to SGD-with-momentum (no adaptive scaling). For t ≥ 5: apply a rectification factor r_t that shrinks the adaptive scale back toward 1.0 when t is small. With RAdam, warmup is UNNECESSARY — the optimizer handles the early-training variance internally. BUT: RAdam is not used widely in LLM training because the computational overhead is noticeable and warmup works just as well empirically.",
+        "Typical warmup settings for LLM pretraining: W = 2000 steps (GPT-2), 10000 steps (Chinchilla, GPT-3), or 2000-4000 steps (LLaMA series). As a fraction: usually 0.5-2% of total training steps. LLaMA-3 used 2000 warmup steps out of ~2T-token budget.",
+        "Warmup shape: LINEAR warmup (lr goes 0→lr_max linearly) is standard. Some papers use SQRT warmup (lr grows like sqrt(t/W) — faster ramp early). Post-warmup: cosine decay from lr_max to lr_min (see q01). The full schedule is 'linear warmup + cosine decay' — nearly universal in 2020+ LLMs."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Saying 'warmup is needed to avoid NaNs from bad initialization'. The root cause isn't init — it's ADAPTIVE OPTIMIZER VARIANCE. Evidence: if you train the same model with SGD+momentum from step 0, no warmup is needed (or benefit is marginal). Warmup is specifically a fix for Adam/AdamW's early-step behavior.",
+      "references": [
+        "https://arxiv.org/abs/1908.03265",
+        "https://arxiv.org/abs/1706.03762",
+        "https://arxiv.org/abs/2005.14165"
+      ],
+      "added_in": "74933dd2761d793ea411f24c228c4a90b5fcdd2d"
+    },
+    {
+      "id": "nb08-q06",
+      "notebook": "08_training_apple_silicon.ipynb",
+      "section": "Gradient accumulation — math and UMA trade-off",
+      "difficulty": "stretch",
+      "roles": [
+        "mle",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "grad-accumulation",
+        "effective-batch",
+        "uma",
+        "apple-silicon"
+      ],
+      "question": "For effective batch `B_eff` with micro-batch `B_micro`, derive the gradient-averaging formula and explain when `loss.backward()` MUST be scaled by `1/accum_steps`. What's the memory / throughput trade-off on Apple Silicon (UMA) vs a discrete GPU?",
+      "answer_key_points": [
+        "Setup: you want effective batch B_eff but can only fit B_micro examples in memory per step. Set `accum_steps = B_eff / B_micro` (integer division, B_eff must be divisible by B_micro). Forward + backward on each of accum_steps micro-batches, ACCUMULATING gradients into a running buffer; step the optimizer only AFTER all accum_steps micro-batches are processed.",
+        "Gradient-averaging derivation: for a mean-reduction loss `L(θ) = (1/B_eff)·Σ_i ℓ(x_i, θ)`, the gradient is `∇L = (1/B_eff)·Σ_i ∇ℓ_i`. When we process B_micro examples at a time with `ℓ_micro = (1/B_micro)·Σ_j ℓ(x_j, θ)`, each micro-batch's gradient `∇ℓ_micro = (1/B_micro)·Σ_j ∇ℓ_j`. Accumulating across accum_steps gives `Σ_k ∇ℓ_micro_k = (1/B_micro)·Σ_{all} ∇ℓ_i`. To match ∇L = (1/B_eff)·Σ: multiply by B_micro/B_eff = 1/accum_steps. So: `accumulated_grad = (1/accum_steps)·Σ_k ∇ℓ_micro_k`.",
+        "Where the 1/accum_steps scaling happens (CRITICAL): you can either (a) divide each micro-batch's loss by accum_steps before backward (`(ℓ_micro / accum_steps).backward()`) — the gradients naturally accumulate to the right scale; or (b) run backward normally and divide the accumulated gradient by accum_steps before the optimizer step. Both are equivalent.",
+        "When scaling is NOT needed: if your loss is SUM-reduced instead of MEAN-reduced (unusual), the gradients from accum_steps micro-batches ALREADY sum to the full-batch result. But essentially every modern training loop uses mean-reduction (`loss.mean()` or the default of most criterion functions). Rule: if you use mean-reduction (the default), you MUST scale by 1/accum_steps somewhere.",
+        "Equivalence to large-batch training: with grad accumulation, the optimizer step sees gradients EQUIVALENT (up to floating-point noise) to training at B_eff. This is why 'grad accumulation is free memory — same math as big-batch training' — TRUE for the gradient step itself, but NOT free for (a) batch norm statistics (each micro-batch sees B_micro samples, not B_eff — use layer/RMS norm instead, which is example-independent), (b) drop-out (sampled independently per micro-batch — minor effect).",
+        "Throughput trade-off on a DISCRETE GPU: `accum_steps` micro-batches means `accum_steps` HBM round-trips to stream weights and activations. Each round-trip has a fixed PCIe latency (~10μs) that gets multiplied. If B_micro is very small, overhead dominates. Net: grad accum on discrete GPU is ~5-15% slower than true-batch training at the same B_eff.",
+        "Throughput trade-off on APPLE SILICON (UMA): unified memory means NO PCIe round-trips — the CPU and GPU share the same RAM pool. `accum_steps` round-trips still happen inside MLX's kernel launches but avoid the PCIe bottleneck. Empirically on M4 Pro: grad accumulation incurs ~1-3% overhead vs true-batch training at matched B_eff. UMA is PARTICULARLY well-suited to grad accumulation because the fixed-per-step overhead is ~10× smaller than on a discrete GPU setup."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Forgetting to divide loss (or accumulated gradient) by accum_steps when using mean-reduction loss. Symptom: effective LR is accum_steps× the intended LR — training diverges after a few steps. Diagnostic: compare the SUM of per-micro-batch loss magnitudes to one TRUE-batch loss at matching B_eff — if they're ~accum_steps× apart, you forgot the scaling.",
+      "references": [
+        "https://huggingface.co/docs/accelerate/usage_guides/gradient_accumulation",
+        "https://pytorch.org/docs/stable/notes/amp_examples.html",
+        "https://ml-explore.github.io/mlx/build/html/usage/unified_memory.html"
+      ],
+      "added_in": "74933dd2761d793ea411f24c228c4a90b5fcdd2d"
+    },
+    {
+      "id": "nb08-q07",
+      "notebook": "08_training_apple_silicon.ipynb",
+      "section": "2024–2026 optimizer frontier",
+      "difficulty": "research",
+      "roles": [
+        "research_engineer",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "lion",
+        "schedule-free",
+        "soap",
+        "muon",
+        "frontier"
+      ],
+      "question": "Compare Lion (2023), Schedule-Free AdamW (2024), SOAP (2024), and Muon (2024). What's the common theme across these post-AdamW optimizers, and what's the open problem for 100B+ models?",
+      "answer_key_points": [
+        "Lion (Chen et al. 2023, arxiv 2302.06675): discovered by an evolutionary search over optimizer update rules. Update: `θ_t = θ_{t-1} - lr · sign(β1·m_{t-1} + (1-β1)·g_t)` — takes only the SIGN of the momentum-averaged gradient. No 2nd moment! Memory: 1 state tensor (m_t) instead of Adam's 2 (m_t, v_t) — ~50% optimizer memory saving. Often matches or beats AdamW at small-medium scale. Used in Imagen, PaLM-2 experiments. Weakness: sign-based updates underperform on some architectures (conv-nets), still scales-to-100B unclear.",
+        "Schedule-Free AdamW (Defazio et al. 2024, arxiv 2405.15682): eliminates the need for a DECAYING LR schedule entirely — no cosine decay, no warmup schedule. Instead, maintains a moving-AVERAGE iterate θ_avg in addition to the current iterate θ. Updates alternate between AdamW-style step on θ and averaging step on θ_avg. Theoretically optimal under a specific class of convex assumptions; empirically matches cosine+warmup on LLM pretraining WITHOUT the hyperparameter (end LR, T, warmup steps).",
+        "SOAP (Vyas et al. 2024, arxiv 2409.11321): Shampoo preconditioner in the rotated eigenbasis of the squared gradients. Pre-conditions the gradient by the (approximate) inverse of the empirical Fisher matrix — adaptive second-order method. Memory cost: 2 state tensors PER dimension (L and R factors of the Kronecker-factored preconditioner) — heavier than AdamW but less than full Shampoo. Demonstrates ~1.4× speedup over AdamW on MoE training at small-ish scale (~1B params).",
+        "Muon (Jordan et al. 2024, arxiv 2410.11081): orthogonalizes the gradient via Newton-Schulz iterations BEFORE the update. Update: `θ_t = θ_{t-1} - lr · orthogonalize(g_t)`. Exploits the observation that matmul gradients tend to be low-rank; orthogonalization 'sharpens' them toward higher-effective-rank directions. Shipped record results on nanoGPT speedrun; ~2× wall-clock speedup vs AdamW at 124M. Scale above 1B unproven as of late 2024.",
+        "COMMON THEME across Lion / Schedule-Free AdamW / SOAP / Muon: all seek to REDUCE the optimizer's parameter-count overhead (Lion: 2× → 1×; SOAP: rotated Shampoo is cheaper than full) AND/OR eliminate hyperparameter friction (Schedule-Free: removes LR schedule; Lion: simpler than AdamW; Muon: orthogonalization is a single fixed op). The frontier theme is 'less state, fewer knobs, same or better convergence'.",
+        "OPEN PROBLEM for 100B+ models: none of these has been VALIDATED at the 100B+ scale where the AdamW training recipe was originally locked in. Specifically: (a) Lion at 100B+ is unproven — PaLM-2 experiments stopped at ~10B; (b) Schedule-Free at 100B+ not yet published; (c) SOAP's preconditioner state is O(d²) per weight matrix — at LLaMA-3-70B's d=8192, that's ~67M per matrix, potentially prohibitive at scale; (d) Muon's orthogonalization cost grows with matrix dimension — small-model wins may not transfer.",
+        "2024-2026 frontier direction: MUP-style parameterization + orthogonal-gradient methods (Muon, Shampoo) + schedule-free training + 8-bit optimizer state. Each sub-problem has a published winner at small scale; the open question is WHICH COMBINATION transfers to the 100B-1T scale without the weeks of HP tuning AdamW currently requires. Schedule-Free AdamW is the 2025 leading candidate among open-source training stacks because it eliminates the TOTAL-STEPS hyperparameter."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Calling these 'alternatives to AdamW'. They're NARROWLY-VALIDATED at small-to-medium scale — all 100B+ flagship models (GPT-4, Claude 3.5, Gemini 1.5, LLaMA-3, DeepSeek-V3) still use AdamW with warmup + cosine. The post-AdamW optimizer frontier is a research direction, not a production default.",
+      "references": [
+        "https://arxiv.org/abs/2302.06675",
+        "https://arxiv.org/abs/2405.15682",
+        "https://arxiv.org/abs/2409.11321",
+        "https://arxiv.org/abs/2410.11081"
+      ],
+      "added_in": "74933dd2761d793ea411f24c228c4a90b5fcdd2d"
     }
   ]
 }

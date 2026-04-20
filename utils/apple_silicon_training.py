@@ -168,8 +168,14 @@ class MixedPrecisionTrainer:
         """
         def bf16_loss_fn(mdl, b):
             x, y = b
-            x_bf16 = x.astype(mx.bfloat16)
-            logits = mdl(x_bf16)
+            # Only cast FLOATING-point inputs to bf16. Integer token-id inputs
+            # must stay integral so downstream nn.Embedding lookups work — the
+            # pre-2025 version of this helper erroneously cast all inputs.
+            if mx.issubdtype(x.dtype, mx.floating):
+                x_cast = x.astype(mx.bfloat16)
+            else:
+                x_cast = x
+            logits = mdl(x_cast)
             logits_f32 = logits.astype(mx.float32)
             return nn.losses.cross_entropy(logits_f32, y, reduction="mean")
 
