@@ -1973,6 +1973,201 @@
         "https://arxiv.org/abs/2410.11081"
       ],
       "added_in": "74933dd2761d793ea411f24c228c4a90b5fcdd2d"
+    },
+    {
+      "id": "nb09-q01",
+      "notebook": "09_modern_architectures.ipynb",
+      "section": "RMSNorm vs LayerNorm — why modern LLMs switched",
+      "difficulty": "warmup",
+      "roles": [
+        "mle",
+        "research_engineer"
+      ],
+      "topic_tags": [
+        "rmsnorm",
+        "layernorm",
+        "normalization",
+        "llama"
+      ],
+      "question": "Why did LLaMA (and nearly every post-2023 open LLM) replace LayerNorm with RMSNorm? Derive the RMSNorm formula and explain the computational saving.",
+      "answer_key_points": [
+        "LayerNorm: `y = γ · (x - μ) / sqrt(σ² + ε) + β` where μ = mean(x) and σ² = var(x) over the feature dimension. Two reductions (mean + variance) plus two learnable parameters (γ, β) per feature.",
+        "RMSNorm (Zhang & Sennrich 2019): `y = γ · x / sqrt(RMS(x)² + ε)` where `RMS(x) = sqrt(mean(x²))`. ONE reduction (mean of squares) instead of two. No mean-subtraction, no bias β — just scale by γ.",
+        "Computational saving: RMSNorm skips the mean computation and the mean-subtraction step. On a GPU/Metal kernel, this saves one full reduction pass over the feature dimension. For d_model=4096, that's ~4K fewer additions per token per layer. At 80 layers × 8K tokens, the savings compound to ~2.6B fewer ops per forward pass.",
+        "Why it works: the key insight from Zhang & Sennrich is that the RE-CENTERING (mean subtraction) in LayerNorm contributes very little to training stability — it's the RE-SCALING (division by RMS) that matters. Empirically, removing the mean subtraction has negligible effect on final loss for transformer language models.",
+        "Pre-norm placement: LLaMA applies RMSNorm BEFORE the attention and FFN sublayers (pre-norm), not after (post-norm as in the original transformer). Pre-norm is more stable for deep networks because the residual stream isn't normalized away — gradients flow through the skip connection unimpeded."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Saying 'RMSNorm is just LayerNorm without the bias β'. The critical difference is removing the MEAN SUBTRACTION (re-centering), not just the bias. LayerNorm without β still computes and subtracts the mean — RMSNorm skips that entirely.",
+      "references": [
+        "https://arxiv.org/abs/1910.07467",
+        "https://arxiv.org/abs/2302.13971"
+      ],
+      "added_in": ""
+    },
+    {
+      "id": "nb09-q02",
+      "notebook": "09_modern_architectures.ipynb",
+      "section": "GQA/MQA memory math — derive KV-cache savings",
+      "difficulty": "core",
+      "roles": [
+        "mle",
+        "research_engineer",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "gqa",
+        "mqa",
+        "kv-cache",
+        "memory",
+        "attention"
+      ],
+      "question": "Derive the KV-cache memory formula for standard MHA, MQA, and GQA. For a 70B model with 64 heads, 8 KV heads, d_head=128, 80 layers, and sequence length 8192 in bf16 — how much KV-cache memory does GQA save vs MHA?",
+      "answer_key_points": [
+        "KV-cache stores the K and V projections for all past tokens so they don't need to be recomputed during autoregressive generation. Per layer, per token: we store K (shape [n_kv_heads, d_head]) and V (same shape). Total per layer per token: `2 · n_kv_heads · d_head · bytes_per_element`.",
+        "MHA (Multi-Head Attention): n_kv_heads = n_heads. KV-cache per layer per token = `2 · n_heads · d_head · dtype_bytes`. For the 70B example: `2 · 64 · 128 · 2 = 32,768 bytes = 32 KiB` per layer per token.",
+        "MQA (Multi-Query Attention): n_kv_heads = 1. KV-cache per layer per token = `2 · 1 · d_head · dtype_bytes`. For the example: `2 · 1 · 128 · 2 = 512 bytes` per layer per token. That's 64× less than MHA.",
+        "GQA (Grouped-Query Attention): n_kv_heads = G where 1 < G < n_heads. Each group of `n_heads / G` query heads shares one KV head. KV-cache per layer per token = `2 · G · d_head · dtype_bytes`. For the example (G=8): `2 · 8 · 128 · 2 = 4,096 bytes = 4 KiB` per layer per token. That's 8× less than MHA.",
+        "Full KV-cache for the 70B example at seq_len=8192: MHA = `80 · 8192 · 32,768 = 21.5 GiB`. GQA (8 KV heads) = `80 · 8192 · 4,096 = 2.7 GiB`. Saving = 21.5 - 2.7 = 18.8 GiB — GQA uses 87.5% less KV-cache memory. This is why GQA is universal in 2024+ LLMs: it makes long-context inference feasible on consumer hardware.",
+        "Quality trade-off: MQA (1 KV head) saves the most memory but loses some quality on tasks requiring fine-grained per-head attention patterns. GQA (G=8 for 64 heads) is the sweet spot — empirically matches MHA quality while saving 8× memory. LLaMA-2 70B, LLaMA-3, Mistral, Gemma 2 all use GQA.",
+        "General formula: `KV_cache_bytes = 2 · L · T · n_kv_heads · d_head · dtype_bytes` where L=layers, T=seq_len. The ratio GQA/MHA = n_kv_heads / n_heads = G / n_heads."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Confusing GQA's memory saving with compute saving. GQA saves KV-CACHE MEMORY (critical for inference) but the attention COMPUTE is the same — every query head still computes Q·K^T and softmax. The saving is in STORAGE, not in FLOPs.",
+      "references": [
+        "https://arxiv.org/abs/2305.13245",
+        "https://arxiv.org/abs/1911.02150",
+        "https://arxiv.org/abs/2307.09288"
+      ],
+      "added_in": ""
+    },
+    {
+      "id": "nb09-q03",
+      "notebook": "09_modern_architectures.ipynb",
+      "section": "SwiGLU vs GeGLU — gating mechanism and parameter count",
+      "difficulty": "core",
+      "roles": [
+        "mle",
+        "research_engineer"
+      ],
+      "topic_tags": [
+        "swiglu",
+        "geglu",
+        "ffn",
+        "gating",
+        "activation"
+      ],
+      "question": "Derive the SwiGLU and GeGLU activation functions from the general GLU framework. Why does SwiGLU need 3 weight matrices instead of 2, and what's the parameter-count implication for a d_model=4096 transformer?",
+      "answer_key_points": [
+        "GLU framework (Dauphin et al. 2017): `GLU(x, W, V, b, c) = σ(xW + b) ⊙ (xV + c)` where σ is a gating activation and ⊙ is element-wise multiplication. The 'gate' σ(xW+b) controls how much of the 'value' (xV+c) passes through — a learned, input-dependent filter.",
+        "SwiGLU (Shazeer 2020): replace σ with Swish (SiLU): `SwiGLU(x) = Swish(xW₁) ⊙ (xV)` where `Swish(z) = z · sigmoid(z)`. Three matrices: W₁ (gate), V (value), and W₂ (down-projection). The FFN becomes: `FFN(x) = W₂ · (Swish(xW₁) ⊙ (xV))`. Used by LLaMA, Mistral, Qwen, DeepSeek.",
+        "GeGLU: replace σ with GELU: `GeGLU(x) = GELU(xW₁) ⊙ (xV)`. Same structure, different gating activation. Used by Gemma, PaLM, some T5 variants. Empirically very close to SwiGLU; the choice is mostly a convention.",
+        "Parameter count: standard FFN has 2 matrices: W_up (d→4d) and W_down (4d→d) = `2 · d · 4d = 8d²` params. SwiGLU/GeGLU has 3 matrices: W₁ (d→4d), V (d→4d), W₂ (4d→d). Naive count = `3 · d · 4d = 12d²` — 50% MORE parameters. To match the standard FFN parameter budget, LLaMA uses `d_ff = (2/3) · 4d ≈ 2.67d` (rounded to a multiple of 256). So: `3 · d · 2.67d ≈ 8d²` — same budget, but the gating mechanism makes better use of those parameters.",
+        "Why SwiGLU outperforms standard FFN: the gating mechanism lets the network learn to SELECTIVELY activate different features for different inputs. Standard ReLU/GELU FFN applies the same nonlinearity uniformly. SwiGLU's input-dependent gating is a form of conditional computation — the network can 'turn off' irrelevant features per token. Shazeer 2020 showed ~1-2% perplexity improvement at matched parameter count."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Saying 'SwiGLU has more parameters so it's better'. At MATCHED parameter count (using the 2/3 scaling), SwiGLU still outperforms standard FFN. The win comes from the GATING MECHANISM, not from extra parameters.",
+      "references": [
+        "https://arxiv.org/abs/2002.05202",
+        "https://arxiv.org/abs/1612.08083",
+        "https://arxiv.org/abs/2302.13971"
+      ],
+      "added_in": ""
+    },
+    {
+      "id": "nb09-q04",
+      "notebook": "09_modern_architectures.ipynb",
+      "section": "Sliding-window attention — Mistral's O(n·W) trick",
+      "difficulty": "stretch",
+      "roles": [
+        "research_engineer",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "sliding-window",
+        "mistral",
+        "attention",
+        "complexity"
+      ],
+      "question": "Explain Mistral's sliding-window attention. Derive the memory and compute complexity vs full causal attention. What's the effective receptive field after L layers with window size W?",
+      "answer_key_points": [
+        "Standard causal attention: each token attends to ALL previous tokens. Attention matrix is lower-triangular, size T×T. Memory for attention scores: O(T²) per head per layer. Compute: O(T² · d_head) per head per layer. At T=32K, the attention matrix alone is 32K² = 1B entries per head — prohibitive.",
+        "Sliding-window attention (SWA): each token at position i attends only to tokens in [i-W, i] where W is the window size (e.g., W=4096 for Mistral 7B). Attention matrix is banded: each row has at most W non-zero entries. Memory: O(T · W) per head per layer. Compute: O(T · W · d_head). At T=32K, W=4096: 32K · 4K = 128M entries — 8× less than full attention.",
+        "Effective receptive field: after L layers of SWA, information can propagate L·W tokens via the residual stream. At layer 1, token i sees [i-W, i]. At layer 2, token i sees [i-2W, i] (because tokens at i-W already saw [i-2W, i-W]). After L=32 layers with W=4096: effective receptive field = 32 · 4096 = 131,072 tokens. This is why Mistral can handle 32K context with only W=4096 — the stacked layers give a much larger effective context.",
+        "Implementation: the sliding-window mask is a band matrix. In MLX: create a causal mask, then zero out entries where `|i - j| > W`. Alternatively, use a custom attention kernel that only computes the W-wide band. Mistral's official implementation uses the mask approach for simplicity.",
+        "Trade-off: SWA loses DIRECT long-range attention — token 0 can't directly attend to token 30K in a single layer. But through the residual stream across L layers, the information propagates. Empirically, this works well for language modeling because most dependencies are local. For tasks requiring precise long-range retrieval (e.g., needle-in-haystack), SWA can underperform full attention.",
+        "Interleaved local/global (Gemma 2/4): alternate SWA layers with full-attention layers. E.g., every 4th layer uses full attention, rest use SWA. Gets ~90% of full-attention quality at ~50% of the memory cost. Best of both worlds."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Saying 'sliding-window attention can only see W tokens'. That's true for a SINGLE layer, but after L layers the effective receptive field is L·W tokens. The stacking effect is the key insight that makes SWA practical.",
+      "references": [
+        "https://arxiv.org/abs/2310.06825",
+        "https://arxiv.org/abs/2004.05150"
+      ],
+      "added_in": ""
+    },
+    {
+      "id": "nb09-q05",
+      "notebook": "09_modern_architectures.ipynb",
+      "section": "Logit soft-capping — Gemma 2 innovation",
+      "difficulty": "stretch",
+      "roles": [
+        "mle",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "soft-capping",
+        "gemma",
+        "attention",
+        "stability"
+      ],
+      "question": "Explain Gemma 2's logit soft-capping mechanism: `tanh(logits/cap) * cap`. Why is this preferable to hard clipping? What happens to gradients near the cap boundary?",
+      "answer_key_points": [
+        "Problem: in deep transformers, attention logits (Q·K^T / sqrt(d)) can grow very large — especially at long sequence lengths where some key positions accumulate high dot-product scores. Large logits cause softmax to saturate (one entry → 1.0, rest → 0.0), which kills gradient flow through the attention layer.",
+        "Hard clipping: `clip(logits, -cap, cap)`. Gradient is exactly 0 for |logits| > cap — the model can't learn to reduce the logit magnitude. This creates a 'dead zone' where the optimizer is blind.",
+        "Soft-capping: `f(x) = tanh(x/cap) · cap`. This smoothly compresses logits into [-cap, cap]. For small x: `tanh(x/cap) ≈ x/cap`, so `f(x) ≈ x` — no distortion. For large |x|: `tanh(x/cap) → ±1`, so `f(x) → ±cap` — bounded but with non-zero gradient.",
+        "Gradient analysis: `df/dx = sech²(x/cap)` (derivative of tanh, scaled). At x=0: gradient = 1.0 (identity). At x=cap: gradient = sech²(1) ≈ 0.42 — still substantial. At x=3·cap: gradient = sech²(3) ≈ 0.01 — small but non-zero. Compare hard clipping: gradient = 0 for |x| > cap. Soft-capping always provides a learning signal.",
+        "Typical cap value: Gemma 2 uses cap=50.0 for attention logits and cap=30.0 for final logits. These are chosen so that normal-range logits (|x| < cap/2) pass through nearly unchanged, while extreme outliers are compressed."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Saying 'soft-capping is just clipping with tanh'. The critical difference is GRADIENT BEHAVIOR: hard clipping has zero gradient beyond the cap (dead zone), while soft-capping has non-zero gradient everywhere. This matters for optimizer convergence.",
+      "references": [
+        "https://arxiv.org/abs/2408.00118",
+        "https://arxiv.org/abs/2403.08295"
+      ],
+      "added_in": ""
+    },
+    {
+      "id": "nb09-q06",
+      "notebook": "09_modern_architectures.ipynb",
+      "section": "2024-2026 architecture frontier",
+      "difficulty": "research",
+      "roles": [
+        "research_engineer",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "gemma-4",
+        "deepseek-v3",
+        "frontier",
+        "architecture"
+      ],
+      "question": "Compare the architectural innovations in Gemma 4, DeepSeek-V3, and Qwen-2.5. What's the common theme across 2024-2025 architecture evolution, and what problems remain unsolved?",
+      "answer_key_points": [
+        "Gemma 4 (Google, 2025): Per-Layer Embeddings (PLE) — a second embedding table feeds residual signals into each layer, allowing layer-specific token representations. K=V sharing in global attention layers (further KV-cache reduction). p-RoPE (proportional RoPE with p=0.25) for better long-context extrapolation. MoE variant: 128 experts, 8 active, plus 1 shared expert.",
+        "DeepSeek-V3 (DeepSeek, 2024): Multi-head Latent Attention (MLA) — compresses KV into a low-rank latent space, reducing KV-cache by ~10× vs GQA. MoE with 256 experts, 8 active, plus 1 shared expert. Auxiliary-loss-free load balancing via bias terms. FP8 mixed-precision training. Trained 14.8T tokens for ~$5.5M — the cost-efficiency benchmark.",
+        "Qwen-2.5 (Alibaba, 2024): Dense models from 0.5B to 72B plus MoE variants. Uses GQA, SwiGLU, RoPE (the standard recipe). Key innovation: extensive data curation (18T tokens) and muP-style hyperparameter transfer across scales. Dual-chunk attention for long context (128K).",
+        "Common theme: the BASE architecture (RMSNorm + SwiGLU + RoPE + GQA) is SETTLED — all three use it. Innovation has shifted to: (a) KV-cache compression (GQA → MLA → K=V sharing), (b) MoE for compute efficiency (more total params, same per-token cost), (c) training efficiency (FP8, better data, muP), (d) long-context handling (p-RoPE, dual-chunk, interleaved local/global).",
+        "Unsolved problems: (a) MoE routing instability at scale — expert collapse and load imbalance remain active research areas. (b) KV-cache for very long context (1M+ tokens) — even with GQA/MLA, the cache grows linearly with sequence length. (c) Architecture search is still manual — no principled way to choose n_heads, d_ff, n_layers jointly. (d) The gap between dense and MoE quality at matched ACTIVE parameters is not fully closed."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Saying 'DeepSeek-V3 is better because it's cheaper'. Cost efficiency depends on the TRAINING RECIPE (data, FP8, MoE) not just architecture. At matched compute, dense models (LLaMA-3 405B) can match MoE quality. The architecture vs training-recipe contribution is not cleanly separable.",
+      "references": [
+        "https://arxiv.org/abs/2408.00118",
+        "https://arxiv.org/abs/2412.19437",
+        "https://arxiv.org/abs/2407.10671"
+      ],
+      "added_in": ""
     }
   ]
 }
