@@ -350,6 +350,226 @@
         "https://numpy.org/doc/stable/reference/arrays.interface.html"
       ],
       "added_in": "7240bbde243341301df18cd49da783a382bfc690"
+    },
+    {
+      "id": "nb02-q01",
+      "notebook": "02_math_foundations.ipynb",
+      "section": "Matrix Multiplication — Matrix Calculus Conventions",
+      "difficulty": "warmup",
+      "roles": [
+        "mle"
+      ],
+      "topic_tags": [
+        "matrix-calculus",
+        "conventions",
+        "autograd"
+      ],
+      "question": "What is the difference between numerator-layout and denominator-layout matrix calculus, and which convention does PyTorch / MLX autograd actually use?",
+      "answer_key_points": [
+        "Numerator layout: ∂y/∂x has shape (dim(y), dim(x)) — the numerator's dimensions come first.",
+        "Denominator layout: ∂y/∂x has shape (dim(x), dim(y)) — the denominator's dimensions come first. The two layouts are transposes of each other.",
+        "Autograd frameworks (PyTorch, MLX, JAX) expose `grad(y) w.r.t. x` as having the SAME shape as `x`, not a Jacobian — this matches reverse-mode AD's vector-Jacobian-product semantics.",
+        "For a scalar loss `L` and parameter tensor `W` with shape `(m, n)`, `∂L/∂W` also has shape `(m, n)` so SGD can write `W -= lr * grad`.",
+        "Implication: when you write a matrix-calc derivation on paper, you must match your convention to the framework's or you'll get a transposed update rule — a classic source of off-by-transpose bugs."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Claiming 'autograd returns the Jacobian' — it returns a vector-Jacobian product shaped like the parameter, never a full dense Jacobian (which for a 1B-param model would be a ~4 EB matrix).",
+      "references": [
+        "https://en.wikipedia.org/wiki/Matrix_calculus",
+        "https://pytorch.org/docs/stable/notes/autograd.html"
+      ],
+      "added_in": "11682d444d5808b7dec535f933137805b133e800"
+    },
+    {
+      "id": "nb02-q02",
+      "notebook": "02_math_foundations.ipynb",
+      "section": "Softmax — Numerical Stability",
+      "difficulty": "core",
+      "roles": [
+        "mle",
+        "research_engineer"
+      ],
+      "topic_tags": [
+        "softmax",
+        "numerical-stability",
+        "log-sum-exp"
+      ],
+      "question": "The naive softmax `exp(x) / sum(exp(x))` blows up on attention logits near magnitude 50. Derive the max-subtraction / log-sum-exp trick from first principles and explain *exactly* why it is mathematically equivalent.",
+      "answer_key_points": [
+        "Multiply numerator and denominator by `exp(-c)` for any constant `c` — the ratio is unchanged: softmax(x)_i = exp(x_i - c) / Σ_j exp(x_j - c).",
+        "Pick c = max(x): all shifted inputs are ≤ 0, so every `exp(x_j - c)` is in (0, 1]; no overflow.",
+        "At least one term equals exp(0) = 1, so the denominator is ≥ 1 — zero underflow for the largest entry (the one that matters most).",
+        "log-sum-exp: log(Σ exp(x_i)) = c + log(Σ exp(x_i - c)); same shift argument, lets us compute log-softmax stably.",
+        "Combined `log_softmax(x) = x - logsumexp(x)` avoids computing exp then log (a double-rounding source); most frameworks fuse it.",
+        "Interview tip: ALWAYS reach for this in code — fp16 logits overflow at ~11.0, bf16 at ~88.7; un-shifted softmax is a latent NaN bomb."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Shifting by the mean instead of the max — the trick relies on ALL shifted inputs being ≤ 0 so every exp is bounded by 1; mean-shifting leaves the largest entry positive, which can still overflow.",
+      "references": [
+        "https://en.wikipedia.org/wiki/LogSumExp",
+        "https://gregorygundersen.com/blog/2020/02/09/log-sum-exp/"
+      ],
+      "added_in": "11682d444d5808b7dec535f933137805b133e800"
+    },
+    {
+      "id": "nb02-q03",
+      "notebook": "02_math_foundations.ipynb",
+      "section": "Softmax — Jacobian (Closed Form)",
+      "difficulty": "core",
+      "roles": [
+        "mle",
+        "research_engineer",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "softmax",
+        "jacobian",
+        "backprop"
+      ],
+      "question": "Derive the Jacobian of softmax(x) ∈ ℝⁿ w.r.t. x ∈ ℝⁿ from scratch. Why does the diagonal vs off-diagonal structure matter for efficient backprop?",
+      "answer_key_points": [
+        "Let s = softmax(x), so s_i = exp(x_i) / Σ_k exp(x_k). Use quotient rule for ∂s_i/∂x_j.",
+        "Diagonal (i == j): ∂s_i/∂x_i = s_i(1 - s_i).",
+        "Off-diagonal (i ≠ j): ∂s_i/∂x_j = -s_i · s_j.",
+        "Compact form: J = diag(s) - s · sᵀ  (an n × n rank-(n-1) matrix).",
+        "Key property: J is symmetric (since s_i·s_j == s_j·s_i) and singular (sum of each row is 0 because Σ s_k = 1 is invariant to a uniform shift in x).",
+        "Efficient backprop: you almost NEVER materialize J. Instead use the identity (J · v)_i = s_i · (v_i - sᵀv) — linear in n, not quadratic."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Writing the Jacobian as J = diag(s) - diag(s²); the off-diagonal piece is the OUTER PRODUCT s·sᵀ, not a diagonal elementwise square.",
+      "references": [
+        "https://eli.thegreenplace.net/2016/the-softmax-function-and-its-derivative"
+      ],
+      "added_in": "11682d444d5808b7dec535f933137805b133e800"
+    },
+    {
+      "id": "nb02-q04",
+      "notebook": "02_math_foundations.ipynb",
+      "section": "Cross-Entropy Loss — Combined Gradient with Softmax",
+      "difficulty": "core",
+      "roles": [
+        "mle",
+        "research_engineer",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "cross-entropy",
+        "softmax",
+        "gradient",
+        "fused-kernel"
+      ],
+      "question": "For loss `L = -log softmax(logits)_y` (cross-entropy with one-hot target `y`), derive ∂L/∂logits. Explain why production kernels NEVER multiply explicitly by the softmax Jacobian.",
+      "answer_key_points": [
+        "Chain rule: ∂L/∂logits = (∂L/∂s) · (∂s/∂logits), where s = softmax(logits).",
+        "∂L/∂s is a one-hot vector: -1/s_y at position y, zero elsewhere.",
+        "Multiplying by J = diag(s) - ssᵀ and simplifying gives the famous closed form: ∂L/∂logits = s - y  (s is the softmax output, y is the one-hot target).",
+        "No n×n Jacobian ever appears in the final formula — it cancels algebraically. Cost drops from O(n²) to O(n).",
+        "Numerical bonus: computed via log_softmax, the gradient is `exp(log_softmax) - one_hot(y)` — avoids computing exp twice and stays fp16/bf16-safe.",
+        "Every production CE+softmax kernel (vLLM, TRT-LLM, MLX-LM, PyTorch's `cross_entropy`) exploits this fusion; hand-rolled 'softmax then CE' on logits is both slower and less stable."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Computing softmax then CE separately and backpropping through both layers — this both wastes FLOPs (the Jacobian-target-onehot cancellation is lost) and introduces a log-of-exp rounding pair that fp16 can't tolerate.",
+      "references": [
+        "https://eli.thegreenplace.net/2016/the-softmax-function-and-its-derivative",
+        "https://cs231n.github.io/linear-classify/"
+      ],
+      "added_in": "11682d444d5808b7dec535f933137805b133e800"
+    },
+    {
+      "id": "nb02-q05",
+      "notebook": "02_math_foundations.ipynb",
+      "section": "Key Takeaways — KL Divergence",
+      "difficulty": "stretch",
+      "roles": [
+        "research_engineer",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "kl-divergence",
+        "information-theory",
+        "alignment"
+      ],
+      "question": "State the three defining properties of KL(p ‖ q), give a concrete example where KL(p ‖ q) ≠ KL(q ‖ p), and explain why RLHF/DPO uses the 'reverse' direction.",
+      "answer_key_points": [
+        "Property 1 — non-negative: KL(p ‖ q) ≥ 0 (Gibbs' inequality, from Jensen applied to the convex −log).",
+        "Property 2 — zero iff equal: KL(p ‖ q) = 0 ⇔ p = q almost everywhere.",
+        "Property 3 — asymmetric: KL is NOT a metric (no triangle inequality, not symmetric); it's a *premetric*.",
+        "Asymmetry example: p = [0.9, 0.1], q = [0.1, 0.9] → KL(p‖q) = 0.9·log(9) + 0.1·log(1/9) ≈ 1.76 nats, KL(q‖p) ≈ 1.76 nats (symmetric here by luck); try p=[1,0,0], q=[1/3,1/3,1/3]: KL(p‖q)=log(3)≈1.10, KL(q‖p)=∞ because q has mass where p has none.",
+        "Zero-probability bin is the killer: KL(p‖q) blows up when q_i=0 but p_i>0 — this is why 'sample from p, score under q' requires q to have FULL support over p.",
+        "RLHF / DPO use KL(π_policy ‖ π_ref) (policy on the left) so the loss is finite: the reference model is trained first and has full support; the policy just needs to stay close.",
+        "Forward KL (p‖q) is 'mean-seeking' (zero-avoiding); reverse KL (q‖p) is 'mode-seeking' (zero-forcing) — MLE training minimizes forward KL of data ‖ model; RLHF minimizes reverse KL of policy ‖ reference."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Calling KL 'a distance' — it's not. It fails BOTH symmetry and the triangle inequality; it's only a divergence. Candidates who write `kl(p,q) == kl(q,p)` get filtered out.",
+      "references": [
+        "https://en.wikipedia.org/wiki/Kullback%E2%80%93Leibler_divergence",
+        "https://arxiv.org/abs/2305.18290"
+      ],
+      "added_in": "11682d444d5808b7dec535f933137805b133e800"
+    },
+    {
+      "id": "nb02-q06",
+      "notebook": "02_math_foundations.ipynb",
+      "section": "Key Takeaways — Entropy & Mutual Information",
+      "difficulty": "stretch",
+      "roles": [
+        "research_engineer",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "entropy",
+        "mutual-information",
+        "perplexity"
+      ],
+      "question": "Connect the dots: what do entropy H(X), cross-entropy H(p, q), KL(p ‖ q), and model perplexity all have to do with each other? Give the exact identity.",
+      "answer_key_points": [
+        "Entropy: H(p) = -Σ p_i log p_i. The self-information of the data distribution; in nats if log=ln, bits if log₂.",
+        "Cross-entropy: H(p, q) = -Σ p_i log q_i. The avg # bits/nats needed to encode samples from p using a code optimized for q.",
+        "The fundamental identity: H(p, q) = H(p) + KL(p ‖ q). Cross-entropy EQUALS entropy PLUS KL.",
+        "LLM training minimizes H(p_data, p_model); since H(p_data) is fixed, this is exactly minimizing KL(p_data ‖ p_model).",
+        "Perplexity = exp(cross-entropy per token). 'The model is choosing among PPL tokens on average' — a PPL of 10 means the model is as uncertain as if uniformly picking one of 10 options per position.",
+        "Mutual information: I(X; Y) = H(X) - H(X|Y) = KL(p(x,y) ‖ p(x)p(y)). Measures how much knowing Y reduces uncertainty about X; appears in InfoNCE, contrastive losses, and information-bottleneck arguments."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Confusing perplexity with cross-entropy — perplexity is the EXPONENTIAL of the per-token CE, not CE itself. A 2× drop in CE is an exponential (not 2×) drop in perplexity.",
+      "references": [
+        "https://en.wikipedia.org/wiki/Cross_entropy",
+        "https://en.wikipedia.org/wiki/Mutual_information"
+      ],
+      "added_in": "11682d444d5808b7dec535f933137805b133e800"
+    },
+    {
+      "id": "nb02-q07",
+      "notebook": "02_math_foundations.ipynb",
+      "section": "Softmax — Log-Sum-Exp in Streaming / Flash-Attention",
+      "difficulty": "research",
+      "roles": [
+        "research_engineer",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "log-sum-exp",
+        "flash-attention",
+        "streaming",
+        "online-softmax"
+      ],
+      "question": "Flash-Attention computes softmax 'online' — one tile at a time, without materializing the full attention matrix. Derive the tile-merge formula for log-sum-exp and explain why this is the crux that makes FA-2 fp16-safe.",
+      "answer_key_points": [
+        "Given two partial running stats (m_a, ℓ_a) and (m_b, ℓ_b) — running max and sum-of-exp relative to that max — the merged (m, ℓ) is: m = max(m_a, m_b); ℓ = exp(m_a - m)·ℓ_a + exp(m_b - m)·ℓ_b.",
+        "At every merge you ADJUST the previously-accumulated ℓ by exp(old_max − new_max) ≤ 1, so no rescale ever grows.",
+        "This keeps every intermediate bounded in (0, ℓ·e], i.e. representable in fp16 (max ~6.5e4) even when raw logits exceed the fp16 exponent range.",
+        "Output `O` tiles follow the same correction: O_new = O_old · exp(m_old - m) + ΔO_new; the rescale ratio is shared with the ℓ update — one extra multiply per tile.",
+        "Memory win: FA-2 never stores the (N × N) softmax matrix — only O(N · d_head) in SRAM; wall-clock win follows because HBM bandwidth was the bottleneck.",
+        "fp16-safety is NOT automatic — DeepSeek-V3 and Gemma still promote the softmax accumulator to fp32 even inside FA-3 tiles because bf16/fp16 precision at ℓ > 10⁴ degrades the tail of the distribution."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Assuming 'fp16 softmax = safe softmax' — tile merging keeps range OK, but precision on the long-tail probabilities (where temperature/sampling actually matters) requires an fp32 accumulator.",
+      "references": [
+        "https://arxiv.org/abs/2205.14135",
+        "https://arxiv.org/abs/2307.08691",
+        "https://tridao.me/publications/flash2/flash2.pdf"
+      ],
+      "added_in": "11682d444d5808b7dec535f933137805b133e800"
     }
   ]
 }
