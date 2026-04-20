@@ -800,6 +800,235 @@
         "https://docs.vllm.ai/en/latest/serving/metrics.html"
       ],
       "added_in": "fa470bf3c1f1d3347d6fe97755a4954e8d080424"
+    },
+    {
+      "id": "nb04-q01",
+      "notebook": "04_embeddings_positional_encoding.ipynb",
+      "section": "RoPE — Absolute Sinusoidal vs Learned",
+      "difficulty": "warmup",
+      "roles": [
+        "mle"
+      ],
+      "topic_tags": [
+        "sinusoidal",
+        "learned-pe",
+        "positional-encoding"
+      ],
+      "question": "Compare absolute sinusoidal positional encoding (the original Transformer) with learned positional embeddings (GPT-2, BERT). When does each win, and what's the failure mode that eventually killed them both in favour of RoPE/ALiBi?",
+      "answer_key_points": [
+        "Sinusoidal (Vaswani et al. 2017): `PE(pos, 2i) = sin(pos / 10000^(2i/d))`, `PE(pos, 2i+1) = cos(pos / 10000^(2i/d))`. Zero learnable parameters; deterministic; added ONCE to input embeddings before the first attention block.",
+        "Learned PE (GPT-2, BERT): a trainable `(max_seq_len, d_model)` matrix indexed by position. Costs V·D extra params; tends to fit the training distribution slightly better than sinusoidal at matched data.",
+        "Sinusoidal wins on THEORETICAL extrapolation: the wave structure continues past `max_seq_len`. In practice 2017-era benchmarks showed it still degrades sharply because attention never saw high-frequency components for those positions during training.",
+        "Learned wins on FINITE contexts: a 512-token model that will NEVER see longer inputs at inference is marginally better with learned PE — the optimizer finds positional representations that correlate with the data.",
+        "Failure mode — both: neither encodes RELATIVE position. The model has to derive 'distance between token m and token n' from `PE(m) − PE(n)` inside attention, which is a sub-optimal indirect signal.",
+        "Failure mode — learned: hard ceiling at `max_seq_len`. Position 512 for a 512-trained model is literally uninitialized; the model emits garbage.",
+        "This is why RoPE (2021) and ALiBi (2021) — both RELATIVE schemes — took over. Since LLaMA (2023), no frontier LLM ships with absolute PE."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Saying 'sinusoidal extrapolates, so early models could run on arbitrary lengths' — the wave structure extrapolates, but the ATTENTION heads learned only on training-length positions and silently break at inference time just as hard as learned PE does.",
+      "references": [
+        "https://arxiv.org/abs/1706.03762",
+        "https://arxiv.org/abs/2104.09864"
+      ],
+      "added_in": "eca89d1e0dfa9a07c9ccaa9606144727320d740c"
+    },
+    {
+      "id": "nb04-q02",
+      "notebook": "04_embeddings_positional_encoding.ipynb",
+      "section": "RoPE — Derivation",
+      "difficulty": "core",
+      "roles": [
+        "mle",
+        "research_engineer"
+      ],
+      "topic_tags": [
+        "rope",
+        "rotation",
+        "relative-position",
+        "derivation"
+      ],
+      "question": "Derive RoPE from first principles. What property do we WANT the position-aware inner product <f(q, m), f(k, n)> to satisfy, why does the complex-number formulation make that derivation trivial, and what exactly is the 'inner-product preserves relative distance' property?",
+      "answer_key_points": [
+        "Desired property: `<f(q, m), f(k, n)> = g(q, k, m − n)` — the inner product between a rotated query at position m and a rotated key at position n must depend ONLY on the RELATIVE offset m − n, never on the absolute positions.",
+        "Ansatz: try multiplicative (not additive) position encoding. Split the d-dim vector into d/2 pairs and treat each pair as a single complex number: `q_j = q_{2j} + i·q_{2j+1}`. Encode position by MULTIPLYING each complex coordinate by `e^(i·m·θ_j)` where `θ_j = 10000^(−2j/d)`.",
+        "In complex form the inner product of the rotated vectors becomes `Re[ Σ_j (q_j · e^(i·m·θ_j)) · conj(k_j · e^(i·n·θ_j)) ] = Re[ Σ_j q_j · conj(k_j) · e^(i·(m−n)·θ_j) ]` — the absolute m and n vanish; only m − n survives. That's the desired property EXACTLY.",
+        "Real-valued implementation: each complex multiply by `e^(i·m·θ)` is a 2×2 rotation `[cos(mθ), −sin(mθ); sin(mθ), cos(mθ)]` applied to the pair (q_{2j}, q_{2j+1}). d/2 independent 2×2 rotations per token per head.",
+        "Inner-product-preserves-relative-distance property: for any shift Δ, `<RoPE(q, m), RoPE(k, n)> = <RoPE(q, m+Δ), RoPE(k, n+Δ)>`. Whiteboard check: rotate both q and k by the same extra offset and the dot product is numerically unchanged to machine precision.",
+        "Side benefit: rotation is ORTHOGONAL ⇒ norm-preserving. `||RoPE(x)|| = ||x||`, so RoPE doesn't distort the magnitude the downstream softmax sees — unlike sinusoidal which ADDS position to the embedding and inflates norms.",
+        "Cost: 0 learnable parameters, d/2 (cos, sin) pairs precomputed once per (seq_len, d_head) at startup, O(B·T·H·D) elementwise multiplies per attention call."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Claiming RoPE is 'sinusoidal inside attention'. It's a MULTIPLICATIVE rotation, not an additive sin/cos shift — and the inner product (not the embedding) is what encodes relative position.",
+      "references": [
+        "https://arxiv.org/abs/2104.09864",
+        "https://blog.eleuther.ai/rotary-embeddings/"
+      ],
+      "added_in": "eca89d1e0dfa9a07c9ccaa9606144727320d740c"
+    },
+    {
+      "id": "nb04-q03",
+      "notebook": "04_embeddings_positional_encoding.ipynb",
+      "section": "ALiBi — Linear Bias Slopes",
+      "difficulty": "core",
+      "roles": [
+        "research_engineer",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "alibi",
+        "length-extrapolation",
+        "attention-bias"
+      ],
+      "question": "Explain ALiBi. Write the slope formula for H heads, reason through why it's specifically `2^(-8/H · head_idx)` (a geometric series 1/2^i), and explain why this particular choice enables length extrapolation beyond training context.",
+      "answer_key_points": [
+        "ALiBi (Attention with Linear Biases, Press et al. 2021): NO positional embedding is added to Q/K. Instead, before the softmax, add a linear bias to the (m, n) attention logit: `A[m,n] ← Q[m]·K[n] − m_h · |m − n|`, where `m_h` is a per-HEAD negative slope.",
+        "Slope formula for H heads: `m_h = 2^(-8 · h / H)` for head index h ∈ {1, ..., H}. That's a geometric series: slopes for H=8 are 1/2, 1/4, 1/8, ..., 1/256 — spanning 8 octaves of distance-decay rates.",
+        "Why 2^(-8/H): the 2^(-8) = 1/256 is the smallest slope in the series; it's chosen so the LOWEST-slope head attends roughly uniformly across 256-ish tokens (log2(256)=8) — large-context semantic head. The HIGHEST-slope head (h=1, slope ≈ 1/2) attends almost exclusively to the immediately preceding token — local-context syntactic head.",
+        "The geometric spacing is deliberate: a LINEAR spread of slopes would cluster all heads near one decay rate. Geometric covers the full 1×..256× distance range with only H heads — classic multi-scale decomposition.",
+        "Length extrapolation: ALiBi is a PURE FUNCTION of `|m − n|`. Training on sequences of length L and evaluating at 4L still uses the same slopes on the same distance metric — no 'out-of-distribution positions' exist. The 2021 paper demonstrates ALiBi-512 extrapolates cleanly to 16k without retraining.",
+        "Trade-off: ALiBi REGRESSES to distance-weighted attention at long range — the bias dominates Q·K for far-apart tokens. Great for long-document tasks that actually have locality; poor for tasks needing long-distance reasoning. This is why LLaMA-1/2/3 picked RoPE (+ YaRN scaling) over ALiBi.",
+        "Used by: BLOOM-176B (2022), MPT-7B (2023), Falcon-RW. Discontinued at the frontier once RoPE + NTK/YaRN matched or beat ALiBi's extrapolation while preserving uniform attention at distance."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Writing the slope as linear in h (slope ∝ h/H) — it's EXPONENTIAL: `slope = 2^(-8·h/H)`. Linear slopes collapse all heads onto a narrow decay band and destroy the multi-scale property.",
+      "references": [
+        "https://arxiv.org/abs/2108.12409",
+        "https://github.com/ofirpress/attention_with_linear_biases"
+      ],
+      "added_in": "eca89d1e0dfa9a07c9ccaa9606144727320d740c"
+    },
+    {
+      "id": "nb04-q04",
+      "notebook": "04_embeddings_positional_encoding.ipynb",
+      "section": "NoPE — No Positional Encoding",
+      "difficulty": "core",
+      "roles": [
+        "research_engineer"
+      ],
+      "topic_tags": [
+        "nope",
+        "causal-mask",
+        "positional-encoding"
+      ],
+      "question": "What is NoPE (2023) and what's the surprising finding? If transformers are permutation-invariant, how can a model with ZERO positional encoding learn any order-sensitive task at all?",
+      "answer_key_points": [
+        "NoPE (Kazemnejad et al., 'The Impact of Positional Encoding on Length Generalization', NeurIPS 2023): strip ALL positional encoding — no sinusoidal, no learned PE, no RoPE, no ALiBi — and train a DECODER-ONLY (causal) transformer.",
+        "The surprising finding: NoPE decoder-only models match or BEAT RoPE / ALiBi on several length-generalization benchmarks. They extrapolate from 512 → 2048 context cleanly, while learned-PE models break immediately and RoPE without YaRN degrades past training length.",
+        "How it's possible: decoder-only transformers are NOT permutation-invariant — the CAUSAL MASK breaks the symmetry. Position n's representation attends to positions {0, ..., n} only; position 0 attends only to {0}. Each layer computes a DIFFERENT function at each position purely because the set of visible tokens differs.",
+        "Concretely, the first-layer attention output at position n is Σ_{i ≤ n} softmax(q_n·k_i)·v_i — it implicitly encodes 'I am at least position n' (because n+1 tokens went into the sum) without any explicit position signal.",
+        "Caveat — this is NOT true for encoder-only / bidirectional models. Remove PE from BERT and every position sees identical context; the model is genuinely permutation-invariant and cannot learn 'The cat sat on the mat' vs 'mat the on sat cat The'.",
+        "Practical significance: the research frontier is exploring hybrid stacks — NoPE layers interleaved with RoPE layers (Llama 4 preview, some DeepSeek ablations) to get the length-generalization of NoPE AND the precise relative-position control of RoPE.",
+        "When NoPE wins in practice: tasks where the causal-mask ordering signal is already sufficient (copy/retrieval, count, pattern continuation). When it loses: tasks needing precise relative-offset matching (e.g. 'what's the 17th word from the end')."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Asserting 'NoPE works because transformers don't need position info' — they DO; the causal mask SUPPLIES the ordering signal. Remove the mask (encoder-only) and NoPE breaks completely.",
+      "references": [
+        "https://arxiv.org/abs/2305.19466",
+        "https://openreview.net/forum?id=wnuCFuKeYl"
+      ],
+      "added_in": "eca89d1e0dfa9a07c9ccaa9606144727320d740c"
+    },
+    {
+      "id": "nb04-q05",
+      "notebook": "04_embeddings_positional_encoding.ipynb",
+      "section": "Context Extension — YaRN / NTK-aware RoPE",
+      "difficulty": "stretch",
+      "roles": [
+        "research_engineer",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "yarn",
+        "ntk-aware",
+        "rope-scaling",
+        "long-context"
+      ],
+      "question": "A model was trained with RoPE at 4K context. You want to extend to 128K at inference time with MINIMAL fine-tuning. Walk through position interpolation (PI), NTK-aware scaling, and YaRN — what each changes, and why YaRN is the current production default.",
+      "answer_key_points": [
+        "Problem: at test-time position 128000 with a model trained to max position 4096, the RoPE angle `m·θ_j` is 32× larger than anything seen during training. High-frequency dimensions wrap around aggressively; attention scores collapse to noise.",
+        "Position Interpolation (PI, Chen et al. 2023): LINEARLY rescale all positions before applying RoPE: `m' = m · L_train / L_test = m / s` where s = 32 for 4K→128K. Every dimension is squeezed by the SAME factor. Requires a small fine-tune (~1B tokens) to recover quality. Simple; works; squeezes all frequencies equally.",
+        "NTK-aware scaling (bloc97, June 2023): different dimensions get different scaling. HIGH-frequency dims (small θ_j) are NOT rescaled — they already wrap many times per 4K so one more wrap is fine. LOW-frequency dims (large θ_j) ARE rescaled — they barely finish one cycle in 4K and must be stretched. Achieved by rescaling `base = 10000 → 10000 · s^(d/(d−2))` rather than the positions themselves. Training-free on short contexts; degrades on very long ones.",
+        "YaRN (Peng et al. 2023, 'Yet another RoPE extensioN'): combines NTK-aware scaling with an explicit ATTENTION TEMPERATURE correction. The observation: as you stretch RoPE, the effective attention-score distribution cools (std shrinks) because close-together positions now look MORE similar. YaRN multiplies logits by `sqrt(1 + 0.1·log(s))` to restore the original temperature.",
+        "YaRN also uses a RAMP function between NTK-style and PI-style scaling: low-freq dims get full PI (preserves smooth extrapolation), high-freq dims get 1× (preserves local precision), mid-freq dims get a smooth interpolation. Three regimes, one hyperparam.",
+        "Production defaults (2024–2025): LLaMA-3.1 uses a YaRN variant at 128K; LLaMA-3.2 ships 128K out-of-the-box with a rescaled RoPE base of 500_000 (!) in addition to YaRN. DeepSeek-V3 extends to 128K with YaRN. Qwen-2.5 uses YaRN + Dual-Chunk Attention for 1M context.",
+        "Fine-tuning budget: PI → ~1B tokens to recover, NTK-aware → ~100M tokens, YaRN → often zero-shot competitive, ~50M tokens to recover completely. That's the main reason YaRN is production default."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Treating NTK-aware scaling as position rescaling. It's a BASE (θ_base) rescaling — positions are left alone, the RoPE frequency schedule is compressed. Confusing these two produces subtly wrong interpolation code that CLIP-degrades attention at long range.",
+      "references": [
+        "https://arxiv.org/abs/2306.15595",
+        "https://arxiv.org/abs/2309.00071",
+        "https://www.reddit.com/r/LocalLLaMA/comments/14lz7j5/ntkaware_scaled_rope_allows_llama_models_to_have/"
+      ],
+      "added_in": "eca89d1e0dfa9a07c9ccaa9606144727320d740c"
+    },
+    {
+      "id": "nb04-q06",
+      "notebook": "04_embeddings_positional_encoding.ipynb",
+      "section": "RoPE Base θ_base — The Hyperparameter Nobody Notices",
+      "difficulty": "stretch",
+      "roles": [
+        "mle",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "rope-base",
+        "theta",
+        "long-context",
+        "hyperparameter"
+      ],
+      "question": "Explain the `rope_base` (θ_base, usually 10000) hyperparameter in RoPE. Why did LLaMA-1 use 10000 but LLaMA-3.1 use 500000? What exactly breaks if you get this wrong at inference time?",
+      "answer_key_points": [
+        "RoPE's per-dimension frequencies are `θ_j = θ_base^(-2j/d)` for j ∈ {0, ..., d/2 − 1}. At `θ_base = 10000, d = 128`: j=0 rotates at freq 1.0 (period 2π), j=63 at freq 10000^(-1) ≈ 1e-4 (period 2π · 10000 ≈ 62800 tokens).",
+        "θ_base controls the WAVELENGTH RANGE of position-dependent signals. Larger θ_base ⇒ the lowest-frequency dim has a LONGER period ⇒ the model can resolve position differences over a longer absolute span without aliasing.",
+        "LLaMA-1 (4K training context): θ_base = 10000. Longest period ≈ 62800 tokens — comfortable headroom above 4K.",
+        "LLaMA-3.1 (128K training context): θ_base = 500000. Longest period ≈ 3.1M tokens. With θ_base=10000 and 128K context, the lowest-freq dim wraps through nearly 2 full cycles — the model would alias position 0 with position 62800.",
+        "Rule of thumb: `θ_base ≈ 100 · L_train` keeps the lowest-freq period safely above training context. Meta's 500_000 value for 128K corresponds roughly to that rule (500000 / 128000 ≈ 3.9× margin).",
+        "Serving-time bug: load LLaMA-3.1 weights but use the config's `rope_theta=10000` (default for legacy models) and you get catastrophic long-context degradation — attention scores beyond ~20k are random. Diagnostic: perplexity curve by context length plateaus then EXPLODES past a specific threshold (the aliasing point).",
+        "Fine-tuning recipe for context extension: first INCREASE `θ_base` to match the new target length, then apply YaRN (or equivalent) as a second correction. Meta's LLaMA-3 training run did both — they bumped θ_base AND used YaRN-style frequency rescaling."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Thinking θ_base is 'just a scale factor'. It's the base of an EXPONENTIAL frequency schedule — doubling θ_base quadruples (not doubles) the lowest-dim period. Arithmetic mistakes here produce silent quality regressions in long-context serving.",
+      "references": [
+        "https://arxiv.org/abs/2309.16039",
+        "https://ai.meta.com/blog/meta-llama-3-1/",
+        "https://huggingface.co/blog/rope-scaling"
+      ],
+      "added_in": "eca89d1e0dfa9a07c9ccaa9606144727320d740c"
+    },
+    {
+      "id": "nb04-q07",
+      "notebook": "04_embeddings_positional_encoding.ipynb",
+      "section": "Positional Encoding × GQA — KV Cache Layout",
+      "difficulty": "research",
+      "roles": [
+        "research_engineer",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "rope",
+        "gqa",
+        "kv-cache",
+        "multi-query-attention"
+      ],
+      "question": "In Grouped-Query Attention (LLaMA-2/3, Mistral, Qwen) a single K/V head is shared across G query heads. Walk through how RoPE interacts with GQA: which tensor gets rotated, is the rotation applied ONCE or G times per layer, and what's the production trade-off between caching PRE-rope vs POST-rope keys?",
+      "answer_key_points": [
+        "GQA shape: `n_heads` query heads, `n_kv_heads = n_heads / G` K/V heads (G=8 for LLaMA-3-70B: 64 Q heads, 8 KV heads). RoPE is applied to BOTH Q and K — but K has fewer heads, so the RoPE cost on K is 1/G of the Q cost.",
+        "Rotation is applied ONCE per K head (not G times). The SAME rotated K head is reused by all G query heads in its group via broadcasting at the score-matmul (or via `mx.repeat`/`einsum` in naive impls). Getting this wrong — re-rotating K once per query head — inflates RoPE cost by G and is a common first-GQA-bug.",
+        "V is NEVER rotated. RoPE rotates the dot-product space (Q·K), not the value space. Value heads are shared across the query group without any position-dependent transform.",
+        "Cache layout choice 1 — POST-rope KV cache (vLLM, SGLang, MLX-LM default): store `K_rotated = RoPE(K, pos)` in the cache. Pro: zero compute per decode step; one lookup, one matmul. Con: the cached keys are TIED to the position at which they were rotated — any context-extension retrofit (YaRN at serving time) requires invalidating the whole cache.",
+        "Cache layout choice 2 — PRE-rope KV cache: store raw K, apply RoPE on-the-fly at attention time using the position index from the cache slot. Pro: trivially supports dynamic RoPE-base / YaRN swap at inference. Con: extra RoPE multiply per decoded token per K head (small — ~1% of attention cost).",
+        "Production choice (2024-2025): frontier servers (vLLM, SGLang, TRT-LLM) default to POST-rope caching because the performance win at 128k context is material and YaRN-at-serving is rare. Research frameworks and some experimentation servers default to pre-rope so you can A/B test scaling factors without rebuilding the cache.",
+        "Subtle bug: SGLang's RadixAttention prefix cache hashes (token_ids) of cached prefix chunks. If a user shares a prefix across two requests at DIFFERENT starting positions (e.g. chat session resuming mid-context), the POST-rope cache entries are VALID ONLY at their original positions — you cannot reuse them at shifted positions. SGLang detects this via a position-equality check on cache hit; a broken check silently corrupts generation."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Answering 'RoPE is applied per attention head' and forgetting that under GQA only the K/V heads are rotated, not each query head. The Q-side rotation IS per-query-head (there's no sharing on Q), but the K-side is per-group — a factor of G difference in compute.",
+      "references": [
+        "https://arxiv.org/abs/2305.13245",
+        "https://arxiv.org/abs/2104.09864",
+        "https://github.com/sgl-project/sglang"
+      ],
+      "added_in": "eca89d1e0dfa9a07c9ccaa9606144727320d740c"
     }
   ]
 }
