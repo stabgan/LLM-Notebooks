@@ -1,0 +1,22 @@
+{
+  "notebook": "06_transformer_architecture.ipynb",
+  "nb_num": 6,
+  "pedagogy_score_before": 6.5,
+  "target_score_after": 8.0,
+  "questions_to_add": 6,
+  "whiteboard_challenges_to_add": 2,
+  "complexity_cells_to_add": 2,
+  "production_cells_to_add": 1,
+  "frontier_cells_to_add": 1,
+  "debugging_cells_to_add": 1,
+  "preserve_sections": [
+    "Introduction",
+    "What You'll Learn",
+    "Summary",
+    "Further Reading"
+  ],
+  "anchor_after_headings": [
+    "Layer normalization",
+    "Residual connections"
+  ]
+}
