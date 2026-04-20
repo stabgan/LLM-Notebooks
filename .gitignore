@@ -27,3 +27,6 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# Generated plan artifacts (regenerate via `.venv/bin/python -m scripts.transform.dump_plan <N>`)
+scripts/transform/_plan_nb*.json

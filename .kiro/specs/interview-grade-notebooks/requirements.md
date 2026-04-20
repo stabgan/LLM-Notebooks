@@ -241,7 +241,9 @@ This feature transforms the 20 existing MLX-on-Apple-Silicon LLM notebooks (`00_
 1. THE feature SHALL depend on MLX at version 0.18 or greater.
 2. THE feature SHALL depend on `nbconvert` for notebook execution.
 3. THE feature SHALL depend on `pytest` and `hypothesis` for the existing and new property-based test suites.
-4. THE feature SHALL use the MCP Jupyter notebook tools (`mcp_jupyter_editor_ipynb_*`) for all programmatic cell edits.
+4. THE feature MAY use either the MCP Jupyter notebook tools (`mcp_jupyter_editor_ipynb_*`) OR direct JSON-level `.ipynb` IO from Python scripts under `scripts/transform/` for programmatic cell edits, provided the resulting notebook passes `nbformat.validate` and executes end-to-end on MLX via `jupyter nbconvert --execute`.
+
+   *(Originally mandated MCP tools only; relaxed after empirical evidence that the MCP tools' parallel-call semantics and batch-insert ordering produced nondeterministic results in our pipeline. Raw JSON IO via idempotent Python scripts provides equivalent byte-level correctness with simpler determinism.)*
 5. THE feature SHALL invoke Python exclusively via `.venv/bin/python`.
 
 ### Requirement 20: Cell Template Consistency

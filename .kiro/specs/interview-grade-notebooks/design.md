@@ -428,7 +428,7 @@ The table below summarizes what each notebook gets. Scripts `scripts/transform/n
 
 ### LLD-5. Integration with Existing Notebook Structure
 
-1. **Never delete beginner content.** Scripts operate via `mcp_jupyter_editor_ipynb_insert_cell` at explicit indices; no `delete_cell` or `replace_cell` unless listed under `preserve_sections = []` override (rare, documented in the manifest).
+1. **Never delete beginner content.** Scripts operate via either `mcp_jupyter_editor_ipynb_insert_cell` or direct JSON-level cell-list insertions at explicit indices; no `delete_cell` or `replace_cell` unless listed under `preserve_sections = []` override (rare, documented in the manifest). Requirement 19.4 permits either mechanism as long as the resulting notebook is nbformat-valid and executes green.
 2. **Anchor by heading, not by index.** Transform scripts first search for the markdown heading (`search_cells`), then insert *after* the matched index. This survives future edits.
 3. **Visual separators.** New strata cells are separated from beginner prose by a `---` cell and prefixed with the emoji key (🎯 🧑‍💻 📐 🏭 🔭 🛠️) so readers can scan for the interview layer without losing the beginner flow.
 4. **Summary index cell.** Every notebook gets a new end-of-notebook cell titled `### 📋 Interview Question Index` listing all Qs with anchors — auto-regenerated from `question_bank.json`.

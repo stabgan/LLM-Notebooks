@@ -1,181 +1,6 @@
 {
   "questions": [
     {
-      "id": "nb00-q01",
-      "notebook": "00_environment_apple_silicon.ipynb",
-      "section": "Unified Memory Architecture (UMA)",
-      "difficulty": "warmup",
-      "roles": [
-        "mle"
-      ],
-      "topic_tags": [
-        "apple-silicon",
-        "uma",
-        "memory-architecture"
-      ],
-      "question": "In one sentence, what is Apple Silicon's Unified Memory Architecture (UMA), and why does it matter for LLM inference?",
-      "answer_key_points": [
-        "CPU, GPU, and Neural Engine share a single physical memory pool on-die.",
-        "Eliminates host↔device copies that dominate CUDA pipelines.",
-        "Effective memory available to the GPU equals system RAM (up to 192 GB on M2 Ultra / 128 GB on M4 Max).",
-        "Matters for LLMs because weight load + KV-cache no longer need PCIe round-trips.",
-        "Trade-off: bandwidth is shared — a heavy CPU workload steals bytes/sec from the GPU."
-      ],
-      "worked_solution_cell_id": null,
-      "trap": "Candidates confuse UMA with 'integrated graphics' — the key point is zero-copy, not just shared silicon.",
-      "references": [
-        "https://ml-explore.github.io/mlx/build/html/index.html",
-        "https://developer.apple.com/metal/"
-      ],
-      "added_in": "f1c1b325461698bc3259fff4b94a7dff6534af83"
-    },
-    {
-      "id": "nb00-q02",
-      "notebook": "00_environment_apple_silicon.ipynb",
-      "section": "Unified Memory Architecture (UMA)",
-      "difficulty": "core",
-      "roles": [
-        "mle",
-        "research_engineer"
-      ],
-      "topic_tags": [
-        "mlx",
-        "lazy-evaluation",
-        "benchmarking"
-      ],
-      "question": "You wrap an MLX op in `time.perf_counter()` and it reports 40 microseconds — but the op is clearly expensive. What happened, and how do you measure correctly?",
-      "answer_key_points": [
-        "MLX is lazy: `mx.array` ops build a compute graph; no kernel launches until an eval is triggered.",
-        "Host-side reads (`.item()`, `numpy()`, `print`) or explicit `mx.eval(x)` force materialization.",
-        "Correct pattern: include `mx.eval(result)` inside the timed region so the kernel actually runs.",
-        "Add ≥ 3 warmup iterations before the timed loop to exclude compile + allocate overhead.",
-        "Verify you're hitting the GPU (`mx.default_device()`) not falling back to CPU."
-      ],
-      "worked_solution_cell_id": null,
-      "trap": "Calling `mx.eval` outside the timed region yields seemingly 'instant' ops because you're timing graph construction, not execution.",
-      "references": [
-        "https://ml-explore.github.io/mlx/build/html/usage/lazy_evaluation.html"
-      ],
-      "added_in": "f1c1b325461698bc3259fff4b94a7dff6534af83"
-    },
-    {
-      "id": "nb00-q03",
-      "notebook": "00_environment_apple_silicon.ipynb",
-      "section": "Metal GPU Capabilities",
-      "difficulty": "core",
-      "roles": [
-        "systems_engineer"
-      ],
-      "topic_tags": [
-        "metal",
-        "cuda",
-        "gpu-programming"
-      ],
-      "question": "Why does MLX target Metal rather than CUDA on M-series Macs, and what are the practical implications for kernel authors porting CUDA code?",
-      "answer_key_points": [
-        "CUDA is NVIDIA-proprietary and does not run on Apple GPUs; Apple exposes compute via Metal.",
-        "Metal's threadgroup model is analogous to CUDA blocks; SIMD-groups ≈ warps (32 lanes on M-series).",
-        "Threadgroup memory replaces CUDA shared memory; `device`/`threadgroup`/`thread` address spaces replace `__global__`/`__shared__`/`__local__`.",
-        "No independent thread scheduling (ITS) — be careful with divergent control flow vs. CUDA 7.0+.",
-        "MLX exposes `mx.fast.metal_kernel` for hand-tuned custom kernels (FlashAttention-style tiling)."
-      ],
-      "worked_solution_cell_id": null,
-      "trap": "Assuming CUDA kernels port 1:1 — Metal's memory hierarchy and synchronization primitives (`threadgroup_barrier`) have subtly different semantics.",
-      "references": [
-        "https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf"
-      ],
-      "added_in": "f1c1b325461698bc3259fff4b94a7dff6534af83"
-    },
-    {
-      "id": "nb00-q04",
-      "notebook": "00_environment_apple_silicon.ipynb",
-      "section": "Memory Bandwidth & Model Size Calculations",
-      "difficulty": "core",
-      "roles": [
-        "research_engineer",
-        "systems_engineer"
-      ],
-      "topic_tags": [
-        "roofline",
-        "memory-bandwidth",
-        "decode"
-      ],
-      "question": "An M4 Pro has ~273 GB/s memory bandwidth and delivers ~5 TFLOPS (fp16) on the GPU. For single-batch decoder-only LLM inference, which bound dominates, and what's the arithmetic intensity threshold?",
-      "answer_key_points": [
-        "Decode is memory-bandwidth-bound: each generated token reads the entire weight matrix once.",
-        "Arithmetic intensity = FLOPs / bytes_read ≈ 2 (one MAC per fp16 weight read).",
-        "Roofline crossover: ~5e12 / 2.73e11 ≈ 18 FLOP/byte — far above 2, so bandwidth wins.",
-        "Implication: int4 quantization yields ~4× decode speedup even though FLOPs are unchanged.",
-        "Prefill is compute-bound (arithmetic intensity ∝ seq_len), so it uses FLOPs, not bandwidth."
-      ],
-      "worked_solution_cell_id": null,
-      "trap": "Reporting peak TFLOPS for decoder-only inference misleads — interviewers want the memory-bandwidth number instead.",
-      "references": [
-        "https://arxiv.org/abs/2309.06180"
-      ],
-      "added_in": "f1c1b325461698bc3259fff4b94a7dff6534af83"
-    },
-    {
-      "id": "nb00-q05",
-      "notebook": "00_environment_apple_silicon.ipynb",
-      "section": "Memory Bandwidth & Model Size Calculations",
-      "difficulty": "stretch",
-      "roles": [
-        "mle",
-        "systems_engineer"
-      ],
-      "topic_tags": [
-        "model-sizing",
-        "quantization",
-        "kv-cache"
-      ],
-      "question": "On a 48 GB M4 Max with macOS reserving ~6 GB, what's the largest dense LLM you can serve at int4, fp8, and fp16? Show the arithmetic and account for KV-cache headroom at seq_len=8k, batch=1.",
-      "answer_key_points": [
-        "Usable memory ≈ 48 - 6 = 42 GB.",
-        "Weight cost: int4 = 0.5 B/param, fp8 = 1, fp16 = 2; max params = usable / B-per-param.",
-        "KV-cache (LLaMA-style, 2·L·T·n_kv_heads·d_head·bytes): ~1-3 GB at 8k for 8-13B models.",
-        "After 3 GB KV headroom: int4 ≈ 78B, fp8 ≈ 39B, fp16 ≈ 19B dense params.",
-        "Caveat: real-world includes activations + scratch buffers — subtract another 2-3 GB."
-      ],
-      "worked_solution_cell_id": null,
-      "trap": "Forgetting the KV-cache reservation — at long context it can be larger than the model weights for small models.",
-      "references": [
-        "https://kipp.ly/transformer-inference-arithmetic/"
-      ],
-      "added_in": "f1c1b325461698bc3259fff4b94a7dff6534af83"
-    },
-    {
-      "id": "nb00-q06",
-      "notebook": "00_environment_apple_silicon.ipynb",
-      "section": "Key Takeaways",
-      "difficulty": "research",
-      "roles": [
-        "research_engineer",
-        "systems_engineer"
-      ],
-      "topic_tags": [
-        "evaluation",
-        "inference-economics",
-        "benchmarking"
-      ],
-      "question": "Design an end-to-end evaluation pipeline that compares a single M4 Pro against an A100-80GB for production-relevant LLM inference economics ($/million tokens). What metrics, workloads, and confounders would you control for?",
-      "answer_key_points": [
-        "Metrics: p50/p99 TTFT, p50/p99 TPOT, tokens/sec (prefill + decode separately), $/M-tokens (amortized).",
-        "Workloads: mixed seq-len distribution (short chat, long RAG, code), concurrency sweep (1, 4, 16, 64 requests).",
-        "Parity: same model weights (e.g., LLaMA-3 8B int4), same quant format, same max seq_len, same batch scheduler.",
-        "Confounders: cold-start vs warm, KV-cache reuse, prompt caching, thermal throttling (M4 Pro has no fan on Mac mini).",
-        "Economics: amortize hardware over 3-yr TCO; include power draw (~60 W M4 Pro vs ~300 W A100) and colocation cost.",
-        "Verify with an open harness (lm-eval-harness for quality, vLLM/MLX-LM latency profiler for speed)."
-      ],
-      "worked_solution_cell_id": null,
-      "trap": "Benchmarking prefill-only on a static prompt — misses the decode-heavy, bandwidth-bound regime where Apple Silicon's unified memory is most competitive.",
-      "references": [
-        "https://github.com/EleutherAI/lm-evaluation-harness",
-        "https://docs.vllm.ai/en/latest/serving/metrics.html"
-      ],
-      "added_in": "f1c1b325461698bc3259fff4b94a7dff6534af83"
-    },
-    {
       "id": "nb01-q01",
       "notebook": "01_mlx_fundamentals.ipynb",
       "section": "MLX vs PyTorch: Lazy Evaluation",
@@ -800,6 +625,181 @@
         "https://arxiv.org/abs/2403.08295"
       ],
       "added_in": "3f8944015a00b78d665821d8bc0262e69a78519b"
+    },
+    {
+      "id": "nb00-q01",
+      "notebook": "00_environment_apple_silicon.ipynb",
+      "section": "Unified Memory Architecture (UMA)",
+      "difficulty": "warmup",
+      "roles": [
+        "mle"
+      ],
+      "topic_tags": [
+        "apple-silicon",
+        "uma",
+        "memory-architecture"
+      ],
+      "question": "In one sentence, what is Apple Silicon's Unified Memory Architecture (UMA), and why does it matter for LLM inference?",
+      "answer_key_points": [
+        "CPU, GPU, and Neural Engine share a single physical memory pool on-die.",
+        "Eliminates host↔device copies that dominate CUDA pipelines.",
+        "Effective memory available to the GPU equals system RAM (up to 192 GB on M2 Ultra / 128 GB on M4 Max).",
+        "Matters for LLMs because weight load + KV-cache no longer need PCIe round-trips.",
+        "Trade-off: bandwidth is shared — a heavy CPU workload steals bytes/sec from the GPU."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Candidates confuse UMA with 'integrated graphics' — the key point is zero-copy, not just shared silicon.",
+      "references": [
+        "https://ml-explore.github.io/mlx/build/html/index.html",
+        "https://developer.apple.com/metal/"
+      ],
+      "added_in": "fa470bf3c1f1d3347d6fe97755a4954e8d080424"
+    },
+    {
+      "id": "nb00-q02",
+      "notebook": "00_environment_apple_silicon.ipynb",
+      "section": "Unified Memory Architecture (UMA)",
+      "difficulty": "core",
+      "roles": [
+        "mle",
+        "research_engineer"
+      ],
+      "topic_tags": [
+        "mlx",
+        "lazy-evaluation",
+        "benchmarking"
+      ],
+      "question": "You wrap an MLX op in `time.perf_counter()` and it reports 40 microseconds — but the op is clearly expensive. What happened, and how do you measure correctly?",
+      "answer_key_points": [
+        "MLX is lazy: `mx.array` ops build a compute graph; no kernel launches until an eval is triggered.",
+        "Host-side reads (`.item()`, `numpy()`, `print`) or explicit `mx.eval(x)` force materialization.",
+        "Correct pattern: include `mx.eval(result)` inside the timed region so the kernel actually runs.",
+        "Add ≥ 3 warmup iterations before the timed loop to exclude compile + allocate overhead.",
+        "Verify you're hitting the GPU (`mx.default_device()`) not falling back to CPU."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Calling `mx.eval` outside the timed region yields seemingly 'instant' ops because you're timing graph construction, not execution.",
+      "references": [
+        "https://ml-explore.github.io/mlx/build/html/usage/lazy_evaluation.html"
+      ],
+      "added_in": "fa470bf3c1f1d3347d6fe97755a4954e8d080424"
+    },
+    {
+      "id": "nb00-q03",
+      "notebook": "00_environment_apple_silicon.ipynb",
+      "section": "Metal GPU Capabilities",
+      "difficulty": "core",
+      "roles": [
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "metal",
+        "cuda",
+        "gpu-programming"
+      ],
+      "question": "Why does MLX target Metal rather than CUDA on M-series Macs, and what are the practical implications for kernel authors porting CUDA code?",
+      "answer_key_points": [
+        "CUDA is NVIDIA-proprietary and does not run on Apple GPUs; Apple exposes compute via Metal.",
+        "Metal's threadgroup model is analogous to CUDA blocks; SIMD-groups ≈ warps (32 lanes on M-series).",
+        "Threadgroup memory replaces CUDA shared memory; `device`/`threadgroup`/`thread` address spaces replace `__global__`/`__shared__`/`__local__`.",
+        "No independent thread scheduling (ITS) — be careful with divergent control flow vs. CUDA 7.0+.",
+        "MLX exposes `mx.fast.metal_kernel` for hand-tuned custom kernels (FlashAttention-style tiling)."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Assuming CUDA kernels port 1:1 — Metal's memory hierarchy and synchronization primitives (`threadgroup_barrier`) have subtly different semantics.",
+      "references": [
+        "https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf"
+      ],
+      "added_in": "fa470bf3c1f1d3347d6fe97755a4954e8d080424"
+    },
+    {
+      "id": "nb00-q04",
+      "notebook": "00_environment_apple_silicon.ipynb",
+      "section": "Memory Bandwidth & Model Size Calculations",
+      "difficulty": "core",
+      "roles": [
+        "research_engineer",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "roofline",
+        "memory-bandwidth",
+        "decode"
+      ],
+      "question": "An M4 Pro has ~273 GB/s memory bandwidth and delivers ~5 TFLOPS (fp16) on the GPU. For single-batch decoder-only LLM inference, which bound dominates, and what's the arithmetic intensity threshold?",
+      "answer_key_points": [
+        "Decode is memory-bandwidth-bound: each generated token reads the entire weight matrix once.",
+        "Arithmetic intensity = FLOPs / bytes_read ≈ 2 (one MAC per fp16 weight read).",
+        "Roofline crossover: ~5e12 / 2.73e11 ≈ 18 FLOP/byte — far above 2, so bandwidth wins.",
+        "Implication: int4 quantization yields ~4× decode speedup even though FLOPs are unchanged.",
+        "Prefill is compute-bound (arithmetic intensity ∝ seq_len), so it uses FLOPs, not bandwidth."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Reporting peak TFLOPS for decoder-only inference misleads — interviewers want the memory-bandwidth number instead.",
+      "references": [
+        "https://arxiv.org/abs/2309.06180"
+      ],
+      "added_in": "fa470bf3c1f1d3347d6fe97755a4954e8d080424"
+    },
+    {
+      "id": "nb00-q05",
+      "notebook": "00_environment_apple_silicon.ipynb",
+      "section": "Memory Bandwidth & Model Size Calculations",
+      "difficulty": "stretch",
+      "roles": [
+        "mle",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "model-sizing",
+        "quantization",
+        "kv-cache"
+      ],
+      "question": "On a 48 GB M4 Max with macOS reserving ~6 GB, what's the largest dense LLM you can serve at int4, fp8, and fp16? Show the arithmetic and account for KV-cache headroom at seq_len=8k, batch=1.",
+      "answer_key_points": [
+        "Usable memory ≈ 48 - 6 = 42 GB.",
+        "Weight cost: int4 = 0.5 B/param, fp8 = 1, fp16 = 2; max params = usable / B-per-param.",
+        "KV-cache (LLaMA-style, 2·L·T·n_kv_heads·d_head·bytes): ~1-3 GB at 8k for 8-13B models.",
+        "After 3 GB KV headroom: int4 ≈ 78B, fp8 ≈ 39B, fp16 ≈ 19B dense params.",
+        "Caveat: real-world includes activations + scratch buffers — subtract another 2-3 GB."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Forgetting the KV-cache reservation — at long context it can be larger than the model weights for small models.",
+      "references": [
+        "https://kipp.ly/transformer-inference-arithmetic/"
+      ],
+      "added_in": "fa470bf3c1f1d3347d6fe97755a4954e8d080424"
+    },
+    {
+      "id": "nb00-q06",
+      "notebook": "00_environment_apple_silicon.ipynb",
+      "section": "Key Takeaways",
+      "difficulty": "research",
+      "roles": [
+        "research_engineer",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "evaluation",
+        "inference-economics",
+        "benchmarking"
+      ],
+      "question": "Design an end-to-end evaluation pipeline that compares a single M4 Pro against an A100-80GB for production-relevant LLM inference economics ($/million tokens). What metrics, workloads, and confounders would you control for?",
+      "answer_key_points": [
+        "Metrics: p50/p99 TTFT, p50/p99 TPOT, tokens/sec (prefill + decode separately), $/M-tokens (amortized).",
+        "Workloads: mixed seq-len distribution (short chat, long RAG, code), concurrency sweep (1, 4, 16, 64 requests).",
+        "Parity: same model weights (e.g., LLaMA-3 8B int4), same quant format, same max seq_len, same batch scheduler.",
+        "Confounders: cold-start vs warm, KV-cache reuse, prompt caching, thermal throttling (M4 Pro has no fan on Mac mini).",
+        "Economics: amortize hardware over 3-yr TCO; include power draw (~60 W M4 Pro vs ~300 W A100) and colocation cost.",
+        "Verify with an open harness (lm-eval-harness for quality, vLLM/MLX-LM latency profiler for speed)."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Benchmarking prefill-only on a static prompt — misses the decode-heavy, bandwidth-bound regime where Apple Silicon's unified memory is most competitive.",
+      "references": [
+        "https://github.com/EleutherAI/lm-evaluation-harness",
+        "https://docs.vllm.ai/en/latest/serving/metrics.html"
+      ],
+      "added_in": "fa470bf3c1f1d3347d6fe97755a4954e8d080424"
     }
   ]
 }
