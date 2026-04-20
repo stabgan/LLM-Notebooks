@@ -1261,6 +1261,246 @@
         "https://github.com/Dao-AILab/flash-attention"
       ],
       "added_in": "d049c8f465e7e82a43c4abdc0ee864bb8bb782e9"
+    },
+    {
+      "id": "nb06-q01",
+      "notebook": "06_transformer_architecture.ipynb",
+      "section": "LayerNorm vs RMSNorm — Derivation",
+      "difficulty": "warmup",
+      "roles": [
+        "mle",
+        "research_engineer"
+      ],
+      "topic_tags": [
+        "layernorm",
+        "rmsnorm",
+        "normalization",
+        "derivation"
+      ],
+      "question": "Write the LayerNorm formula and the RMSNorm formula side by side. What exactly does RMSNorm drop, and why does RMSNorm match LayerNorm quality on modern LLMs despite removing that step?",
+      "answer_key_points": [
+        "LayerNorm (Ba et al. 2016): `y = γ · (x - μ) / σ + β`, where μ = mean(x, axis=-1), σ = std(x, axis=-1), γ and β are learned per-feature (shape (d,)). TWO reductions over the hidden dim (mean, then variance), a subtract, a divide, an elementwise multiply, and an add — ~5 elementwise passes.",
+        "RMSNorm (Zhang & Sennrich 2019): `y = γ · x / RMS(x)`, where `RMS(x) = sqrt(mean(x², axis=-1) + eps)`. No mean subtraction, no β (no shift). ONE reduction (mean of squares), a sqrt, a divide, a multiply. ~3 elementwise passes — ~10-15% fewer ops and one fewer reduction.",
+        "What RMSNorm drops: the RE-CENTERING step (`x - μ`) and the LEARNED SHIFT (`β`). Both were thought essential in 2016 (centering controls the mean of activations, shift gives the layer a learnable bias) but empirically neither moves the needle at LLM scale.",
+        "Why RMSNorm is equivalent in quality: for high-dimensional Gaussian-like activations, `Var(x) ≈ E[x²] - (E[x])² ≈ E[x²]` because the mean is already near zero (forced by the previous layer's LayerNorm or residual accumulation). So `RMS(x) ≈ std(x)` and the division does substantially the same variance-normalization work. The learned β was found redundant with the bias in the following Linear layer — both are learnable shifts of the same axis.",
+        "Empirical validation: LLaMA, LLaMA-2, LLaMA-3, LLaMA-3.1, Mistral, Qwen, Gemma, DeepSeek-V3 — every 2023+ major open-weights LLM ships with RMSNorm. GPT-3 used LayerNorm; GPT-4 and successors are inferred to use RMSNorm (OpenAI hasn't published but the throughput pattern fits).",
+        "Throughput win at scale: one fewer reduction pass over d_model means ~15% less HBM traffic for the norm and one fewer synchronization point. At d_model=8192, batch 2048, the cumulative savings across all ~80 norms per forward is measurable (single-digit % end-to-end) — worth it at scale, negligible at small scale.",
+        "Beyond basic story: PyTorch 2.1+ ships a FUSED RMSNorm kernel (torch.nn.functional.rms_norm); Flash-LayerNorm (Triton) exists for LayerNorm; MLX ships `mx.fast.rms_norm` / `mx.fast.layer_norm` as fused Metal kernels. The kernel-fusion difference is what actually gets you the 10-15% speedup — the op-count arg alone doesn't close the gap without a fused kernel."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Saying 'RMSNorm is faster because it has fewer ops'. The op count alone doesn't help without a fused kernel — PyTorch with nn.LayerNorm spends most of the time in memory traffic, not arithmetic. RMSNorm's wall-clock win comes from fused Metal/CUDA kernels that exploit the ONE-reduction property to avoid a second pass over HBM.",
+      "references": [
+        "https://arxiv.org/abs/1607.06450",
+        "https://arxiv.org/abs/1910.07467",
+        "https://arxiv.org/abs/2302.13971"
+      ],
+      "added_in": "15d7431989bb20f2985f8c126dbd1ff7d4636600"
+    },
+    {
+      "id": "nb06-q02",
+      "notebook": "06_transformer_architecture.ipynb",
+      "section": "Pre-norm vs Post-norm",
+      "difficulty": "core",
+      "roles": [
+        "mle",
+        "research_engineer",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "pre-norm",
+        "post-norm",
+        "residual",
+        "training-stability"
+      ],
+      "question": "Write the pre-norm and post-norm block formulas side by side. Why did the 2017 Transformer paper use post-norm but every LLM since GPT-2 uses pre-norm? What changes about the gradient path?",
+      "answer_key_points": [
+        "Post-norm (Vaswani 2017): `y = Norm(x + Sublayer(x))`. The norm sits AFTER the residual add. Every sublayer output is renormalized along with the residual path.",
+        "Pre-norm (GPT-2, 2019 onwards): `y = x + Sublayer(Norm(x))`. The norm sits INSIDE the residual, applied to x BEFORE the sublayer. The residual path `x + ...` is untouched by norm — gradients flow through the `+` identity directly.",
+        "Gradient-path argument (the reason pre-norm won): in post-norm, the gradient going BACK through a block multiplies by the Jacobian of Norm at every step. Stacking 30+ post-norm blocks → gradient norm can blow up OR vanish exponentially (depending on the LayerNorm scaling) — requires aggressive LR warmup and limits depth.",
+        "In pre-norm, the residual connection `x + ...` has gradient 1.0 along the identity path regardless of depth. The gradient to `x` in `y = x + f(Norm(x))` is `1 + df/dx`, which is always at least `1` in expectation. You can stack 100+ pre-norm blocks without warmup and they train stably from step 0.",
+        "Cost: pre-norm's residual stream grows in magnitude (each block ADDS to it without renormalization). After 30 blocks the residual's variance is ~30× the input variance. The final output norm (one more Norm at the end) renormalizes it before the lm_head — pre-norm models all have a final `lm_norm` that post-norm models don't need.",
+        "Post-norm IS NOT OBSOLETE in 2024: recent work (DeepNorm, 2022; Sub-LN, 2024) re-habilitates post-norm for 100B+ models by carefully scaling the residual branch (e.g., `y = Norm(α · x + Sublayer(x))` with `α` tuned to the depth). These schemes trade pre-norm's gradient stability for post-norm's output-scale stability — an active research direction.",
+        "Interview-grade summary: pre-norm wins at SCALE (training 30+ layers is stable without tuning); post-norm + DeepNorm wins at DEPTH (100+ layers, once you're willing to pay for the warmup and per-depth α). GPT-2/3/4, LLaMA, Mistral, Qwen, Gemma, DeepSeek-V3 are all pre-norm. The 2017 original transformer was 6 layers — depth where post-norm was fine."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Saying 'pre-norm is more stable because the norm is applied first'. The order of ops isn't what makes it stable — it's that the RESIDUAL identity path is preserved (gradient of `x` is 1.0 at every depth). Moving Norm anywhere else in the block, as long as it's OUTSIDE the residual branch, gets the same benefit.",
+      "references": [
+        "https://arxiv.org/abs/1706.03762",
+        "https://arxiv.org/abs/2002.04745",
+        "https://arxiv.org/abs/2203.00555"
+      ],
+      "added_in": "15d7431989bb20f2985f8c126dbd1ff7d4636600"
+    },
+    {
+      "id": "nb06-q03",
+      "notebook": "06_transformer_architecture.ipynb",
+      "section": "Residual Connections — Why They're Critical",
+      "difficulty": "core",
+      "roles": [
+        "mle",
+        "research_engineer"
+      ],
+      "topic_tags": [
+        "residual",
+        "vanishing-gradient",
+        "deep-networks",
+        "identity-path"
+      ],
+      "question": "Why do residual connections (`x + f(x)`) make deep networks trainable? Write down the backward-pass gradient for a stack of N residual blocks and explain WHY the identity-path gradient dominates.",
+      "answer_key_points": [
+        "Setup: a single residual block computes `y = x + f(x)`, where `f` is the sublayer (attention or FFN with its norm). The Jacobian of `y` w.r.t. `x` is `I + f'(x)` — identity PLUS the sublayer Jacobian.",
+        "Stack N blocks: `x_0 → x_1 = x_0 + f_1(x_0) → ... → x_N = x_{N-1} + f_N(x_{N-1})`. Backward: `dL/dx_0 = dL/dx_N · Π_{i=1..N} (I + f_i'(x_{i-1}))`.",
+        "Expand the product via distributivity: `Π (I + f_i') = I + Σ f_i' + Σ_{i≠j} f_i'·f_j' + ...`. The FIRST term is identity `I` — present in every path, never decays with depth. Gradient to x_0 always includes an UNATTENUATED copy of the output gradient.",
+        "Without residuals (`y = f(x)`): backward is `dL/dx_0 = dL/dx_N · Π f_i'(x_{i-1})`. This is a pure product. If each Jacobian has spectral norm < 1 (common for well-initialized layers with saturating activations), the gradient DECAYS exponentially: ‖dL/dx_0‖ ≤ ρ^N · ‖dL/dx_N‖ for ρ < 1. At N=30, ρ=0.9: gradient is `(0.9)^30 ≈ 0.04`× — 25× attenuation. At N=100: `≈ 2.7e-5` — effectively zero signal to x_0.",
+        "With residuals: even if every `f_i'` has spectral norm 0 (dead sublayers), the identity path survives: `dL/dx_0 = dL/dx_N`. The network gracefully DEGRADES to a shallower network rather than failing outright. Every extra residual block can make the model no worse than the shallower version — the theoretical basis for 'deeper is never worse'.",
+        "Historical context: ResNet (He et al. 2015) introduced residuals for 152-layer CNNs; training a plain 20-layer net was already hard in 2015. The Transformer (2017) adopted the same idea. Without residuals, GPT-3's 96 layers would be untrainable; LLaMA-3's 80 layers likewise.",
+        "Corollary for inference stability: because every residual block's output is CLOSE to its input (f(x) is a small perturbation), activations don't drift catastrophically. The magnitude of the residual stream grows ~sqrt(n_layers) — predictable, bounded, easy to tune norms for."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Answering 'residuals help by providing extra parameters'. They have ZERO extra parameters — they're just the `+` op on the forward pass. The benefit is entirely on the BACKWARD pass, through the identity-path Jacobian. Saying 'they let the network skip layers' is closer but still vague — the precise story is the additive-identity gradient term.",
+      "references": [
+        "https://arxiv.org/abs/1512.03385",
+        "https://arxiv.org/abs/1603.05027",
+        "https://arxiv.org/abs/1706.03762"
+      ],
+      "added_in": "15d7431989bb20f2985f8c126dbd1ff7d4636600"
+    },
+    {
+      "id": "nb06-q04",
+      "notebook": "06_transformer_architecture.ipynb",
+      "section": "Parameter Count of a Transformer Block",
+      "difficulty": "core",
+      "roles": [
+        "mle",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "parameter-count",
+        "karpathy-formula",
+        "attention",
+        "mlp"
+      ],
+      "question": "Derive the parameter count of a single transformer block as a function of d_model (assume n_heads · d_head = d_model, FFN expansion = 4, no biases). Show how you arrive at the Karpathy `12 · n_layers · d_model²` estimate for the whole model (ignoring embedding and norms).",
+      "answer_key_points": [
+        "Attention projections: Q, K, V, O each map `d_model → d_model` (because n_heads · d_head = d_model). Four Linear layers with no bias, each with `d_model²` params. Attention total: `4 · d_model²` per block.",
+        "MLP (classic GPT, 4× expansion, no gating): two Linears `d_model → 4·d_model → d_model`. Params: `d_model · (4·d_model) + (4·d_model) · d_model = 8·d_model²`. MLP total: `8 · d_model²` per block.",
+        "Attention + MLP: `4·d² + 8·d² = 12 · d_model²` per block. Multiply by `n_layers` for the backbone: `12 · n_layers · d_model²`. This is the Karpathy estimate (nanoGPT, Let's build GPT from scratch).",
+        "At d_model=768 (GPT-2 small), 12 layers: 12 · 12 · 768² = 85M params — matches the published 124M minus the embedding (50257 · 768 = 39M) ⇒ 85M backbone is correct.",
+        "What the formula IGNORES: (a) the embedding (`vocab_size · d_model` — often comparable to the backbone at small scale); (b) the lm_head (same shape as embedding; half the cost if tied, see q06); (c) layer norms (each LN/RMSNorm has `d_model` or `2·d_model` params — negligible, ~0.01% of total); (d) positional embeddings if learned (absolute-position has `max_seq_len · d_model`, zero for RoPE).",
+        "Modifications in modern LLMs: (a) SwiGLU MLP has THREE Linears of total shape `3 · d_model · d_ff` — to keep 12·d² matched, `d_ff = 8/3 · d_model` (not 4·d_model). See q05. Formula holds; (b) GQA with `n_kv_heads < n_heads` shrinks K and V: attention becomes `2·d² + 2·(d·d_kv)` where `d_kv = d_model · n_kv_heads/n_heads` — saves up to ~3·d² per block at 8:1 GQA ratio.",
+        "Scaling checks: LLaMA-3-8B has d=4096, L=32 → backbone ≈ 12·32·4096² = 6.4B params. LLaMA-3-70B has d=8192, L=80 → 12·80·8192² = 64.4B — tight match. The formula is the single cheapest model-scale sanity check."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Forgetting the `W_O` output projection in attention. Beginners count 3 · d² (Q, K, V) and come up short. W_O is the matrix that recombines the per-head outputs back into d_model — a full d×d matrix and a required part of the block. Q/K/V/O = FOUR projections, not three.",
+      "references": [
+        "https://karpathy.github.io/2022/06/29/llm-examples/",
+        "https://github.com/karpathy/nanoGPT",
+        "https://arxiv.org/abs/2302.13971"
+      ],
+      "added_in": "15d7431989bb20f2985f8c126dbd1ff7d4636600"
+    },
+    {
+      "id": "nb06-q05",
+      "notebook": "06_transformer_architecture.ipynb",
+      "section": "FFN Expansion Ratio — 4× vs 8/3× with SwiGLU",
+      "difficulty": "stretch",
+      "roles": [
+        "research_engineer",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "ffn",
+        "swiglu",
+        "expansion-ratio",
+        "gating"
+      ],
+      "question": "Why is the classic GPT FFN expansion `d_ff = 4 · d_model`, but LLaMA uses `d_ff = 8/3 · d_model` with SwiGLU? Show the parameter-matching derivation and explain why the 8/3 looks weird but is the mathematically right choice.",
+      "answer_key_points": [
+        "Classic GPT FFN (no gating): `y = W_2 · gelu(W_1 · x)`. Two matrices: `W_1: d → 4·d`, `W_2: 4·d → d`. Parameters: `d · 4d + 4d · d = 8·d²`. Expansion 4× is a Vaswani-paper constant, chosen empirically for best compute-quality tradeoff.",
+        "SwiGLU FFN (LLaMA, PaLM, DeepSeek): `y = W_3 · (silu(W_1 · x) ⊙ (W_2 · x))`. THREE matrices instead of two. `W_1: d → d_ff`, `W_2: d → d_ff`, `W_3: d_ff → d`. Parameters: `3 · d · d_ff`.",
+        "To keep the SwiGLU FFN parameter-matched to the classic GPT 4× FFN: `3 · d · d_ff = 8 · d²` ⇒ `d_ff = 8/3 · d ≈ 2.67 · d`. Concretely: LLaMA-3-8B has d=4096, d_ff=14336 ≈ (8/3)·4096 · 1.3 (rounded up to a multiple of 256 for hardware); pre-rounding `2.67·d = 10923`.",
+        "Why match parameters, not expansion ratio: the COMPUTE-QUALITY tradeoff is set by the parameter count per layer, not the hidden dim of the FFN. SwiGLU at `d_ff=8/3·d` has the SAME parameters as GELU at `d_ff=4·d` and empirically MATCHES or BEATS the quality. Chinchilla-optimal scaling is defined in total-params-per-token.",
+        "Why SwiGLU wins at equal parameters: the GATING mechanism (`silu(u) ⊙ v`) is more expressive than a fixed nonlinearity. The `silu(u)` branch acts as a soft gate over the `v` branch — the FFN can learn to SELECTIVELY activate directions in feature space. GELU applies the same nonlinearity uniformly. PaLM (Chowdhery et al. 2022) published +0.5-1.0 pp improvement on common benchmarks at matched params.",
+        "Why the 8/3 looks weird: it's an IRRATIONAL scaling that breaks the clean 'multiple of 4' convention of classic transformers. In practice every LLM rounds UP to the nearest multiple of 128, 256, or 512 for Metal / CUDA tile alignment — LLaMA-3-8B uses d_ff=14336 (multiple of 256); DeepSeek-V3 uses d_ff=18432 (multiple of 256). The 8/3 is a derivation target, not the final number.",
+        "2024 frontier: Gemma-2 uses SwiGLU at 8/3×; Qwen-2.5 uses SwiGLU at 8/3×. GeGLU (gated GELU) is an alternative that some papers (GLaM, T5-v1.1) use — same 3-matrix structure, GELU instead of SiLU in the gate, slightly worse at scale but better early in training. SwiGLU has won in 2024–2025 deployments."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Answering 'SwiGLU is faster because 8/3 < 4 — fewer params'. The whole point is that SwiGLU at 8/3 has the SAME parameter count as GELU at 4 (matched by construction). It's not faster per-param; it's the same parameter budget delivering better quality because gating is more expressive.",
+      "references": [
+        "https://arxiv.org/abs/2002.05202",
+        "https://arxiv.org/abs/2302.13971",
+        "https://arxiv.org/abs/2204.02311"
+      ],
+      "added_in": "15d7431989bb20f2985f8c126dbd1ff7d4636600"
+    },
+    {
+      "id": "nb06-q06",
+      "notebook": "06_transformer_architecture.ipynb",
+      "section": "Weight Tying — wte ↔ lm_head",
+      "difficulty": "stretch",
+      "roles": [
+        "mle",
+        "research_engineer"
+      ],
+      "topic_tags": [
+        "weight-tying",
+        "embedding",
+        "lm-head",
+        "parameter-efficiency"
+      ],
+      "question": "What is weight tying between `wte` (word-token embedding) and `lm_head`? How much memory does it save, and why does it improve quality on small models but is sometimes dropped at large scale?",
+      "answer_key_points": [
+        "Definition: in most LLMs, `wte` (`vocab_size × d_model` embedding lookup) and `lm_head` (`d_model × vocab_size` output projection from hidden to logits) have the SAME shape modulo transpose. Weight tying sets `lm_head.weight = wte.weight.T` — one tensor, used twice.",
+        "Memory win: WITHOUT tying you store `2 · vocab_size · d_model` params. WITH tying you store `vocab_size · d_model`. Savings: `vocab_size · d_model`. At vocab=128k (LLaMA-3), d=4096: 128k · 4096 · 2 bytes (bf16) = 1 GB saved per copy. Non-trivial at small-model scale.",
+        "Quality argument (Press & Wolf 2017, Inan et al. 2017): the embedding matrix `E` maps tokens to a d-dim space; the lm_head maps d-dim hidden states back to a distribution over tokens. At convergence, the optimal output projection is CLOSE to (a scaled version of) the embedding — pointing each token's hidden state back toward its own embedding. Tying the weights USES THIS STRUCTURE directly: fewer parameters, faster convergence, better at small model sizes.",
+        "Empirical evidence: GPT-2 (all sizes), BERT, T5 — all use tied embeddings. The original GPT-2 paper reports that TYING was necessary for convergence on small models at small data; untying hurt on 124M, neutral on 1.5B.",
+        "Why some large models UNTIE: at 100B+ scale, the dataset is large enough that the untied `lm_head` can learn its own specialized projection — the 'embedding ≈ lm_head' prior is too restrictive at scale. PaLM (540B) untied; GPT-4 (inferred) untied; DeepSeek-V3 untied. LLaMA-3 stays TIED even at 70B — so the choice is not universal.",
+        "Variations in 2024–2025: LLaMA-3 and most Qwen / Mistral variants still tie. DeepSeek-V3, Grok, and inferred OpenAI models untie. The memory saving is small at 100B scale (a few % of total) but the quality delta is usually < 0.1 pp — small enough that engineering convenience (independent gradient flow through the output head) wins for big labs.",
+        "Implementation detail: when tied, the training optimizer must handle the fact that `wte` receives gradients BOTH from embedding lookups (sparse) AND from the lm_head (dense). AdamW accumulates both into the shared tensor — subtle but usually correct. Untied heads have cleaner separate gradient accumulation."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Saying 'tying saves HALF the parameters'. It saves EXACTLY `vocab_size · d_model` — the embedding / lm_head pair is two of the ~10 largest tensors in a transformer. At LLaMA-3-8B (8B total params), the embedding is 128k · 4096 ≈ 524M — tying saves 524M, or ~6.5% of the model. Not half.",
+      "references": [
+        "https://arxiv.org/abs/1608.05859",
+        "https://arxiv.org/abs/1611.01462",
+        "https://github.com/openai/gpt-2"
+      ],
+      "added_in": "15d7431989bb20f2985f8c126dbd1ff7d4636600"
+    },
+    {
+      "id": "nb06-q07",
+      "notebook": "06_transformer_architecture.ipynb",
+      "section": "DeepNorm / Sub-LN / QK-norm — Frontier on Training Stability",
+      "difficulty": "research",
+      "roles": [
+        "research_engineer",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "deepnorm",
+        "sub-ln",
+        "qk-norm",
+        "training-stability",
+        "frontier"
+      ],
+      "question": "At 100B+ params even pre-norm + residual models become unstable during training. Explain the 2022–2025 frontier on this: DeepNorm's residual scaling, Sub-LN's placement, and Gemma-2's QK-norm. What specific failure mode does each address?",
+      "answer_key_points": [
+        "Problem at 100B+: even pre-norm transformers hit 'loss spikes' during training — sudden divergences caused by activation-magnitude drift in specific layers (usually mid-depth) that cascade through the residual stream. Gradient clipping doesn't help because the issue is in the FORWARD pass, not the backward.",
+        "DeepNorm (Wang et al. 2022): keeps post-norm but SCALES the residual branch: `y = Norm(α · x + Sublayer(x))`. Sets α based on depth (`α = (2N)^(1/4)` for encoder, different for decoder) to keep the residual stream variance stable at init AND at convergence. Enables 1000-layer transformers to train stably. Used in: Microsoft's Kosmos, BLOOM's 176B, earlier BaiChuan.",
+        "Sub-LN (Scalable-LN, 2024): a VARIATIONAL placement of LayerNorm INSIDE the sublayer's computation (before and/or after the matmul) — the 'sub' refers to applying LN at the SUB-component level. Addresses the training instability of very deep pre-norm models by bounding the activation magnitude per-component rather than per-block.",
+        "QK-norm (Henry et al. 2020; Gemma-2 2024; Qwen-2.5 2024): applies RMSNorm to Q and K BEFORE the attention dot product — `attn = softmax(norm(Q) · norm(K)ᵀ / √d)·V`. Addresses the specific failure mode where one head's Q·K logits drift to extreme magnitudes mid-training, saturating softmax and killing that head. √d scaling is necessary but not SUFFICIENT at 100B+; QK-norm is the 2024 default fix.",
+        "Why all three exist: they address DIFFERENT failure modes at scale. DeepNorm: residual-stream variance drift over depth. Sub-LN: per-component activation-magnitude control. QK-norm: per-head attention-logit saturation. A modern 100B+ model often combines pre-norm + QK-norm (Gemma-2 does this) or DeepNorm + QK-norm for maximum stability.",
+        "2024 frontier status: pre-norm + RMSNorm + QK-norm is the production default for 10B–100B open models (Gemma-2, Qwen-2.5, DeepSeek-V3). DeepNorm sees selective use for extreme-depth experiments. Sub-LN is still early — appears in some 2024 papers but no flagship model ships it yet.",
+        "What's on the horizon (late 2025): muP (Yang et al., μ-parameterization) is a complementary approach — scales initializations and learning rates per-layer to make training invariant to width. OpenReLU-stability analyses and residual-reparameterization tricks from 2024–2025 papers are converging on the same fix space. Expect the 2026 models to inherit 2-3 of these stability primitives as 'the new normal' — the way RMSNorm became normal in 2023."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Lumping DeepNorm, Sub-LN, and QK-norm together as 'new norms'. They fix DIFFERENT failure modes and are compositional, not alternatives. DeepNorm rescales residuals; Sub-LN changes placement inside the sublayer; QK-norm applies norm to attention logits. A modern 100B+ model may use all three simultaneously.",
+      "references": [
+        "https://arxiv.org/abs/2203.00555",
+        "https://arxiv.org/abs/2010.04245",
+        "https://arxiv.org/abs/2408.00118"
+      ],
+      "added_in": "15d7431989bb20f2985f8c126dbd1ff7d4636600"
     }
   ]
 }
