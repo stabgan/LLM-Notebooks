@@ -570,6 +570,236 @@
         "https://tridao.me/publications/flash2/flash2.pdf"
       ],
       "added_in": "11682d444d5808b7dec535f933137805b133e800"
+    },
+    {
+      "id": "nb03-q01",
+      "notebook": "03_tokenization.ipynb",
+      "section": "BPE — Merge Algorithm",
+      "difficulty": "warmup",
+      "roles": [
+        "mle"
+      ],
+      "topic_tags": [
+        "bpe",
+        "tokenization",
+        "training"
+      ],
+      "question": "Walk me through how BPE *trains* a vocabulary of size V starting from raw bytes. What exactly does each iteration do, what does it produce, and why is the choice 'merge the most frequent adjacent pair' (not 'the pair that most improves likelihood') actually the defining feature of BPE?",
+      "answer_key_points": [
+        "Initialize the vocab with the 256 byte values; tokenize the corpus into a list of byte-ids.",
+        "Count every adjacent pair across the (token-level) corpus — Σ_w count(w) · freq_of_pair_in_w; this is the O(n) pass per iteration.",
+        "Pick the most frequent pair `(a, b)`, mint a NEW token id `|V|`, and record the merge rule `(a, b) -> |V|`.",
+        "Rewrite the corpus: every occurrence of `a b` becomes the new token `|V|`. Pair counts around the merge are incrementally updated (no re-scan needed for correctness but every production impl re-counts neighbours, O(n) per step).",
+        "Repeat V − 256 times to reach vocab size V; the ordered list of merges is the tokenizer's state.",
+        "The 'most-frequent-pair' rule is the BPE-defining distinction from WordPiece (likelihood-gain) and Unigram (prune-from-large-vocab): BPE is GREEDY on raw counts — no language-model score appears in training.",
+        "Encoding time at INFERENCE is O(n · merges) naive, or O(n log n) with a heap over active pair-scores; decoding is O(n) (look up each id, concatenate bytes)."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Saying BPE 'learns the best segmentation per the model' — it does not; it greedily merges the most frequent pair. Likelihood-based selection is WordPiece's rule, not BPE's.",
+      "references": [
+        "https://arxiv.org/abs/1508.07909",
+        "https://github.com/openai/tiktoken"
+      ],
+      "added_in": "3f8944015a00b78d665821d8bc0262e69a78519b"
+    },
+    {
+      "id": "nb03-q02",
+      "notebook": "03_tokenization.ipynb",
+      "section": "BPE — Algorithm Family Comparison",
+      "difficulty": "core",
+      "roles": [
+        "mle",
+        "research_engineer"
+      ],
+      "topic_tags": [
+        "bpe",
+        "wordpiece",
+        "unigram",
+        "sentencepiece"
+      ],
+      "question": "Compare the FOUR subword tokenizer families — BPE, WordPiece, Unigram, SentencePiece — along (a) direction of vocab construction, (b) selection criterion per step, and (c) which production models use which. Which one is SentencePiece actually?",
+      "answer_key_points": [
+        "BPE — bottom-up; select the most frequent adjacent pair; used by GPT-2/3/4 (via tiktoken), LLaMA-1/2, Mistral.",
+        "WordPiece — bottom-up; select the pair that MAXIMIZES the likelihood of the training corpus under a unigram model (≈ score = count(ab)/count(a)·count(b)); used by BERT, DistilBERT, Electra.",
+        "Unigram — top-down; start with a large candidate set (e.g. 10× target), run EM on a unigram language model, prune the lowest-loss tokens each step until you reach target size; used by T5, ALBERT, XLNet.",
+        "SentencePiece is NOT an algorithm — it's a FRAMEWORK that hosts BPE or Unigram and treats text as a raw byte stream (no whitespace pre-tokenization, language-agnostic). Used by LLaMA, Gemma, T5, Mistral, Qwen.",
+        "Implication: 'LLaMA uses SentencePiece' == 'LLaMA uses SentencePiece-BPE' (BPE under the hood); 'T5 uses SentencePiece' == 'T5 uses SentencePiece-Unigram'.",
+        "Algorithm matters less than (i) training-corpus composition and (ii) vocab size — a BPE tokenizer trained on English is terrible for Japanese regardless of the algorithm."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Calling SentencePiece an algorithm (it's a framework), or saying 'WordPiece is just BPE' (WordPiece selects by likelihood gain, BPE by raw frequency — a different training-time objective).",
+      "references": [
+        "https://arxiv.org/abs/1508.07909",
+        "https://arxiv.org/abs/1804.10959",
+        "https://github.com/google/sentencepiece"
+      ],
+      "added_in": "3f8944015a00b78d665821d8bc0262e69a78519b"
+    },
+    {
+      "id": "nb03-q03",
+      "notebook": "03_tokenization.ipynb",
+      "section": "tiktoken vs HuggingFace Tokenizers",
+      "difficulty": "core",
+      "roles": [
+        "mle",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "tiktoken",
+        "huggingface",
+        "rust",
+        "licensing"
+      ],
+      "question": "Compare `tiktoken` and HuggingFace `tokenizers` on speed, algorithm coverage, and licensing. If you're shipping a production inference server that must support both LLaMA-3 and GPT-4-style clients, which do you reach for?",
+      "answer_key_points": [
+        "Both are Rust-backed — tiktoken ~3–6x faster than HF `tokenizers` on the BPE hot path (OpenAI benchmarks ~1M tokens/s/core on cl100k_base); HF catches up on small payloads where Python overhead dominates.",
+        "tiktoken supports ONLY OpenAI-family byte-level BPE encodings (cl100k_base, o200k_base, p50k_base, r50k_base, gpt2); no WordPiece, no Unigram, no SentencePiece.",
+        "HF `tokenizers` is algorithm-agnostic: BPE, WordPiece, Unigram, byte-level BPE, and a `tokenizer.json` spec that captures pretokenizer + normalizer + decoder. Loads 99% of the models on the Hub out-of-the-box.",
+        "Licensing: tiktoken is MIT; HF `tokenizers` is Apache-2.0. Both safe for commercial redistribution; HF additionally ships the `transformers` stack under Apache-2.0.",
+        "LLaMA-3 SWITCHED to a tiktoken-compatible encoding (128k-vocab, BPE with byte-fallback) — Meta publishes the merge table so either library can load it; internally LLaMA-3 inference uses tiktoken's rust core.",
+        "Production recommendation: use `tokenizers.Tokenizer.from_pretrained(...)` as the single abstraction across models; fall through to tiktoken only if you're in a latency-critical path that's 100% GPT-4-style and you've profiled the win."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Claiming 'tiktoken is always faster' — it's faster on cl100k/o200k-style byte-level BPE only; HF `tokenizers` wins on Unigram / WordPiece because tiktoken can't even run those algorithms.",
+      "references": [
+        "https://github.com/openai/tiktoken",
+        "https://github.com/huggingface/tokenizers",
+        "https://ai.meta.com/blog/meta-llama-3/"
+      ],
+      "added_in": "3f8944015a00b78d665821d8bc0262e69a78519b"
+    },
+    {
+      "id": "nb03-q04",
+      "notebook": "03_tokenization.ipynb",
+      "section": "SentencePiece — Pretokenization",
+      "difficulty": "core",
+      "roles": [
+        "research_engineer",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "byte-fallback",
+        "pretokenization",
+        "multilingual"
+      ],
+      "question": "What does 'byte-fallback' mean in LLaMA's tokenizer, and how does it differ from 'whitespace pretokenization' as used by GPT-2? Why did both design choices evolve?",
+      "answer_key_points": [
+        "Whitespace pretokenization (GPT-2): the raw text is FIRST split on whitespace/punctuation (via regex) before BPE sees it; BPE then operates WITHIN each word. Consequence: BPE merges never cross word boundaries, `' hello'` and `'hello'` get different ids.",
+        "GPT-2 also uses BYTE-LEVEL BPE (base alphabet is 256 bytes, not Unicode codepoints), so any input byte is representable — no UNK token is needed, but the base vocabulary is always ≥ 256.",
+        "SentencePiece treats the entire sentence as a raw byte stream with NO pretokenization — spaces become the literal `▁` token (U+2581) so whitespace is recoverable. This makes the tokenizer truly language-agnostic (no 'split on whitespace' assumption that breaks Japanese/Chinese/Thai).",
+        "Byte-fallback: if the tokenizer cannot match any trained subword, decompose the unseen character into its UTF-8 bytes, emit one token per byte (the 256 base-byte tokens are always in the vocab). LLaMA-1/2/3, Mistral, and Gemma all use this.",
+        "The result: with byte-fallback, UNK tokens are effectively extinct — every Unicode string round-trips through the tokenizer losslessly.",
+        "Evolutionary arc: GPT-2 added byte-level BPE to remove the UNK token; SentencePiece removed whitespace pretokenization to remove the language bias; LLaMA-3 reintroduced a regex pretokenizer (for speed) while keeping byte-fallback (for correctness) — the current best-of-both."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Confusing 'byte-level BPE' (base alphabet = 256 bytes) with 'byte-fallback' (an OOV handling rule). GPT-2 has the first but NOT the second; LLaMA has both.",
+      "references": [
+        "https://arxiv.org/abs/1909.03341",
+        "https://github.com/google/sentencepiece#byte-fallback-feature",
+        "https://huggingface.co/docs/transformers/tokenizer_summary"
+      ],
+      "added_in": "3f8944015a00b78d665821d8bc0262e69a78519b"
+    },
+    {
+      "id": "nb03-q05",
+      "notebook": "03_tokenization.ipynb",
+      "section": "Summary — Vocab-Size Math",
+      "difficulty": "stretch",
+      "roles": [
+        "mle",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "vocab-size",
+        "embedding",
+        "memory",
+        "compute"
+      ],
+      "question": "You're choosing vocab size V for a new 7 B model at d_model = 4096. Derive the memory cost of the embedding table + unembedding (tied or untied) in bf16, and list the four trade-offs you should weigh at V = 32k vs 128k vs 256k.",
+      "answer_key_points": [
+        "Embedding memory = V · D · bytes_per_elem; bf16 = 2 bytes. At D = 4096: 32k → 256 MiB, 50k → 400 MiB, 128k → 1.0 GiB, 256k → 2.0 GiB (per copy; TIED wte/lm_head halves that, UNTIED doubles it).",
+        "Fraction of a 7 B model's total params: 32k → 1.9 %, 128k → 7.5 %, 256k → 14 % — at 256k the vocab can become the single largest parameter block.",
+        "Trade-off 1 — context efficiency: larger vocab ⇒ fewer tokens per string ⇒ more real content per fixed context window. LLaMA-3's move 32k → 128k gave ~15 % fewer tokens on English, ~2× fewer on code.",
+        "Trade-off 2 — softmax cost at the head: O(B·T·V) FLOPs + memory; at V = 256k, the final softmax can cost more than the whole attention stack on short sequences. Frontier trainers shard the vocab across TP ranks.",
+        "Trade-off 3 — gradient signal per token: more tokens with smaller vocab ⇒ more gradient steps per byte of training data ⇒ better sample efficiency for small budgets; mirror-image effect for large budgets.",
+        "Trade-off 4 — multilingual fertility: small English-only vocab (32k) fragments Japanese text into ~3× as many tokens as a bilingual 128k vocab; user-visible in cost ($/token) and latency.",
+        "Rule of thumb from 2024–2025: open-weights trending to V ≈ 128k (LLaMA-3, Qwen-2.5) for the code/multilingual boost; Gemma-3 at V = 256k for extreme multilingual coverage; specialised English-only models still fine at 32k."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Forgetting the UNEMBEDDING matrix — the lm_head is the same V·D shape as the embedding. Untied models pay 2× the memory and both matrices sit in VRAM during inference.",
+      "references": [
+        "https://arxiv.org/abs/2302.13971",
+        "https://ai.meta.com/blog/meta-llama-3/",
+        "https://arxiv.org/abs/2403.08295"
+      ],
+      "added_in": "3f8944015a00b78d665821d8bc0262e69a78519b"
+    },
+    {
+      "id": "nb03-q06",
+      "notebook": "03_tokenization.ipynb",
+      "section": "Summary — Tokenizer Leakage",
+      "difficulty": "stretch",
+      "roles": [
+        "research_engineer",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "leakage",
+        "evaluation",
+        "multilingual",
+        "data-contamination"
+      ],
+      "question": "Name THREE distinct ways a tokenizer can silently corrupt your evaluation — 'tokenizer leakage' — and explain how each one inflates or deflates reported metrics. For each, describe the mitigation.",
+      "answer_key_points": [
+        "Leak 1 — EVAL-SET TOKEN BLEED: the tokenizer is TRAINED on a corpus that overlaps with the eval set (e.g. wikitext in both), so exact eval sentences get single-token BPE chunks. Perplexity drops because the model only has to predict a handful of high-probability tokens. MITIGATION: train the tokenizer on a strictly-held-out slice, or measure BITS-PER-BYTE instead of per-token perplexity (invariant to tokenization).",
+        "Leak 2 — CROSS-LINGUAL BLEED: multilingual tokenizer has been trained with unbalanced data (e.g. 95 % English, 5 % everything else), so English gets 1 token/word while Japanese gets 3 tokens/word. Reported 'per-token' metrics look equal across languages but the model sees 3× more real content per sample in English. MITIGATION: report BITS-PER-BYTE or BITS-PER-CHARACTER, not per-token perplexity; balance the tokenizer training corpus.",
+        "Leak 3 — TRAIN↔EVAL TOKENIZER MISMATCH: you trained with SentencePiece vocab A, then eval with HF tokenizer B that has the SAME vocabulary but different pretokenizer rules (e.g. HF adds a BOS, SP does not). Embedding lookups silently decode to the wrong tokens → garbage logits. This ALWAYS looks like the model regressed by 5–15 % PPL; never like a tokenizer bug. MITIGATION: pin the exact `tokenizer.json` / SentencePiece model file to the checkpoint; hash-check on load; round-trip `tokenizer.decode(tokenizer.encode(x)) == x` on eval.",
+        "Bonus — BENCHMARK LEAKAGE via tokenizer glob: benchmarks like MMLU or HumanEval contain distinctive strings (e.g. '```python\\ndef '); if those exact multi-char byte sequences became single-token merges during tokenizer training, the model effectively gets a 'this is a benchmark' flag for free.",
+        "The common thread: tokenizer statistics learned on data X invalidate any per-token metric computed on data also-containing-X. Bits-per-byte is the safe default."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Comparing per-token PPL across tokenizers (or across languages under one tokenizer) — both are meaningless. Only bits-per-byte is tokenizer-invariant.",
+      "references": [
+        "https://arxiv.org/abs/2305.15249",
+        "https://arxiv.org/abs/2005.00052",
+        "https://github.com/EleutherAI/lm-evaluation-harness"
+      ],
+      "added_in": "3f8944015a00b78d665821d8bc0262e69a78519b"
+    },
+    {
+      "id": "nb03-q07",
+      "notebook": "03_tokenization.ipynb",
+      "section": "Summary — Special Tokens",
+      "difficulty": "research",
+      "roles": [
+        "research_engineer",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "special-tokens",
+        "chat-templates",
+        "bos",
+        "eos",
+        "pad"
+      ],
+      "question": "Walk through the roles of BOS, EOS, PAD, and UNK. Why do modern instruction-tuned models (LLaMA-3-Instruct, Qwen-2.5, Gemma-3) ship 10–30 ADDITIONAL special tokens, and what concrete bug do you get if the serving stack ignores them?",
+      "answer_key_points": [
+        "BOS (beginning-of-sequence): attention/position-encoding anchor; some models (LLaMA) trained WITH a BOS and degrade sharply without one; others (GPT-2) don't use one. If your chat template forgets it, generations start with degenerate filler tokens for the first ~10 steps.",
+        "EOS (end-of-sequence): the sampler's stop signal. Without it, greedy decoding runs to max_new_tokens. Multiple EOS tokens (LLaMA-3 has both `<|end_of_text|>` and `<|eot_id|>`) mean the serving stack must stop on EITHER — forgetting the second gives the classic 'model keeps talking past end-of-turn' bug.",
+        "PAD: training-time only, to rectangularize batches. Attention masks zero out PAD positions. If PAD and EOS share an id (a common shortcut), the model learns 'pad = stop' and generations terminate prematurely at batch boundaries.",
+        "UNK: the 'unknown token' fallback. With byte-level BPE + byte-fallback (LLaMA, Gemma), UNK is effectively dead — never emitted. Legacy tokenizers (SentencePiece without byte-fallback, WordPiece) still emit UNK on unseen scripts, silently dropping information.",
+        "Modern chat tokens (e.g. LLaMA-3: `<|start_header_id|>`, `<|end_header_id|>`, `<|eot_id|>`, `<|python_tag|>`) encode the chat structure INSIDE the token stream. The model was trained to attend to these boundaries; if the serving stack strips them or emits plain-text replacements ('User:') the model's instruction-following regresses to the base-model level.",
+        "Concrete bug: a vLLM deployment loading LLaMA-3-Instruct without the updated `tokenizer_config.json` generated endless tool-call JSON because `<|eot_id|>` was not registered as a stop token. Fix is one config line; diagnosis looks like a model-quality regression.",
+        "Defensive checklist: (i) load the tokenizer config from the SAME commit as the weights; (ii) assert `tokenizer.special_tokens_map` matches the model card; (iii) configure the sampler's `stop_token_ids` to include every EOS variant; (iv) verify `encode(decode(ids)) == ids` on the chat template."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Treating EOS as a single id — LLaMA-3 and Gemma-3 ship MULTIPLE stop tokens. Hard-coding only the first one is the #1 source of 'the model won't shut up' production incidents.",
+      "references": [
+        "https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct/blob/main/tokenizer_config.json",
+        "https://ai.meta.com/blog/meta-llama-3/",
+        "https://arxiv.org/abs/2403.08295"
+      ],
+      "added_in": "3f8944015a00b78d665821d8bc0262e69a78519b"
     }
   ]
 }
