@@ -1029,6 +1029,238 @@
         "https://github.com/sgl-project/sglang"
       ],
       "added_in": "eca89d1e0dfa9a07c9ccaa9606144727320d740c"
+    },
+    {
+      "id": "nb05-q01",
+      "notebook": "05_self_attention.ipynb",
+      "section": "Scaled Dot-Product — Why √d_head?",
+      "difficulty": "warmup",
+      "roles": [
+        "mle",
+        "research_engineer"
+      ],
+      "topic_tags": [
+        "scaling",
+        "softmax",
+        "variance",
+        "derivation"
+      ],
+      "question": "Derive the √d_head scaling factor in `softmax(Q·Kᵀ / √d_head)·V`. Assume q and k are independent, zero-mean, unit-variance vectors of dimension d. What is Var(q·k), and what goes wrong to the softmax if you forget to divide by √d?",
+      "answer_key_points": [
+        "Setup: q, k ∈ ℝ^d with q_i, k_i i.i.d. zero-mean unit-variance. The dot product is `q·k = Σᵢ q_i · k_i`. Each term is a product of two independent unit-variance zero-mean variables → E[q_i·k_i] = 0, Var(q_i·k_i) = Var(q_i)·Var(k_i) + 0 = 1.",
+        "Sum of d independent unit-variance terms: `Var(q·k) = d`, `Std(q·k) = √d`. So the raw logit `q·k` has scale √d — NOT 1. Without rescaling, the entries of `Q·Kᵀ` grow as √d_head and saturate the softmax at large d.",
+        "Softmax saturation pathology: for logits with std σ, the softmax output is dominated by the largest entry once σ ≳ log(T) (T = sequence length). At d_head=128, σ = √128 ≈ 11.3 — the softmax is a near-delta function. Gradient of softmax at a near-delta is ~0 ⇒ attention can't learn.",
+        "Fix: divide by √d_head BEFORE softmax. `(q·k) / √d_head` has variance 1 again; logits stay in the regime where softmax is smooth and gradients are non-vanishing. The scaling factor is a variance-preservation reparameterisation, not a learning-rate hack.",
+        "Historical note: this is why Vaswani et al. (2017) call it 'SCALED' dot-product attention. Bahdanau/Luong (2014/2015) used additive attention `tanh(Wq+Wk)` which has bounded outputs — they didn't need rescaling because `tanh` is O(1) regardless of d.",
+        "Alternative scalings that DON'T work: dividing by d (too aggressive — logits shrink with dimension), using LayerNorm inside Q·K (what 'QK-norm' / `use_qk_norm=True` does in Qwen-2.5/Gemma-2 — a more aggressive form; works but changes learning dynamics), or just reducing the learning rate (misses that the problem is in the softmax, not the optimizer).",
+        "Beyond the basic story: QK-norm (applying LayerNorm to Q and K before the dot product) is the 2024 frontier fix — it handles the variance issue AND the training-instability problem at scale where the √d scaling is necessary but not SUFFICIENT at 100B+ params (Gemma-2, Qwen-2.5 both ship with QK-norm)."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Saying 'we divide by √d_head so the softmax doesn't overflow numerically'. It's not about float overflow — it's about softmax SATURATION killing the gradient. Numerical overflow is handled separately by the max-subtract trick inside `mx.softmax` / `F.softmax`.",
+      "references": [
+        "https://arxiv.org/abs/1706.03762",
+        "https://lilianweng.github.io/posts/2018-06-24-attention/"
+      ],
+      "added_in": "d049c8f465e7e82a43c4abdc0ee864bb8bb782e9"
+    },
+    {
+      "id": "nb05-q02",
+      "notebook": "05_self_attention.ipynb",
+      "section": "Attention as Weighted Retrieval",
+      "difficulty": "core",
+      "roles": [
+        "mle",
+        "research_engineer"
+      ],
+      "topic_tags": [
+        "attention",
+        "intuition",
+        "qkv",
+        "retrieval"
+      ],
+      "question": "Explain attention as a (soft) key-value database lookup. What does each of Q, K, V represent semantically, and what does `softmax(Q·Kᵀ/√d)·V` compute in that analogy? Why is this 'soft' retrieval rather than a hard lookup?",
+      "answer_key_points": [
+        "Analogy: a token is asking a QUESTION (its query vector q). Every token in the context offers a KEY (how it advertises itself) and a VALUE (what it actually contains). The query goes to each key, gets a relevance score, and receives back a weighted mix of values.",
+        "Q = queries. Per-token: 'what information am I looking for?' Shape (B, T, H, d_head). Produced by `X · W_Q`.",
+        "K = keys. Per-token: 'what do I advertise that I have?' Shape (B, T, H, d_head). Produced by `X · W_K`. In self-attention K comes from the SAME sequence as Q; in cross-attention it comes from a DIFFERENT sequence (encoder output).",
+        "V = values. Per-token: 'what's the payload I return if someone matches me?' Shape (B, T, H, d_v). Produced by `X · W_V`.",
+        "The computation: `scores = Q·Kᵀ / √d_head` — (T, T) matrix of query-key dot-product similarities. `weights = softmax(scores, axis=-1)` — each row is a probability distribution over keys. `output = weights · V` — each output row is a convex combination of value rows, weighted by how much that key matched its query.",
+        "'Soft' retrieval: a hard database lookup returns ONE value — the one whose key exactly matches. Soft retrieval returns a WEIGHTED SUM of all values, where the weights are a smooth function of key-similarity. This makes attention differentiable (the weights are softmax, not argmax), which is the whole reason it trains by gradient descent.",
+        "Why this was a breakthrough: pre-2017 NN memory (neural Turing machines, memory networks) used softer but heavier lookup mechanisms. Vaswani's 'attention is all you need' showed that this ONE primitive — Q/K/V dot-product + softmax — is sufficient to replace recurrence AND convolution for sequence modeling. The receptive field is all-pairs; the operation is parallel; the gradients flow everywhere."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Answering 'Q, K, V are all the same thing — just the input projected through three matrices'. They ARE three projections of the same input in SELF-attention, but the three W matrices are learned INDEPENDENTLY and encode three semantically distinct roles. In CROSS-attention Q comes from a different sequence than K/V entirely.",
+      "references": [
+        "https://arxiv.org/abs/1706.03762",
+        "https://distill.pub/2016/augmented-rnns/"
+      ],
+      "added_in": "d049c8f465e7e82a43c4abdc0ee864bb8bb782e9"
+    },
+    {
+      "id": "nb05-q03",
+      "notebook": "05_self_attention.ipynb",
+      "section": "Causal Masking — Implementation Details",
+      "difficulty": "core",
+      "roles": [
+        "mle",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "causal-mask",
+        "autoregressive",
+        "softmax",
+        "inference"
+      ],
+      "question": "Walk through the EXACT implementation of causal masking. Where in the pipeline do you apply the mask, what do you fill masked positions with, and what goes wrong if you apply the mask AFTER softmax instead of before?",
+      "answer_key_points": [
+        "Where: in `softmax(Q·Kᵀ/√d + M)·V` the mask `M` is added to the pre-softmax logit matrix. Positions (i, j) where i < j (j is strictly in the future of i) get `M[i,j] = -∞`; positions i ≥ j get `M[i,j] = 0` (no change).",
+        "Concrete MLX/Torch idiom: `scores = mx.where(mask == 0, mx.array(-1e9, dtype=scores.dtype), scores)`. The sentinel `-1e9` rather than literal `-∞` sidesteps NaN issues from `exp(-∞) · 0` in corner cases (e.g. when an entire row is masked) — every production framework uses a large-negative-finite value.",
+        "Pre-softmax is REQUIRED because softmax normalizes its input: `softmax(x_i) = exp(x_i) / Σ_j exp(x_j)`. Setting `x_masked = -∞` makes `exp(x_masked) = 0`, which removes the masked entry from BOTH the numerator AND the denominator — the remaining entries form a valid probability distribution summing to 1.",
+        "Apply AFTER softmax instead: the softmax has already summed UNMASKED+MASKED entries into the denominator. Zero-ing out the masked entries after the fact leaves the denominator too large — the unmasked entries now sum to < 1. The 'attention weights' no longer form a probability distribution; downstream `weights · V` is under-weighted and the model silently loses ~half of its attention signal at early positions.",
+        "Symptom at inference time: an 'after-softmax' mask doesn't cause NaN or crash — the model just generates plausible-looking but degraded text, because attention weights are uniformly damped. This is one of the hardest-to-catch causal-attention bugs.",
+        "Training-time consequence of a MISSING causal mask: the model cheats — at each position it sees the full context including future tokens. Training loss drops to near-zero (overfitting), but at inference time (no future tokens available) outputs are garbage. Classic 'train-test mismatch' bug.",
+        "Production concern: at inference with KV cache, the mask is RECTANGULAR not square — a single new query attends to T existing cached keys. MLX-LM / vLLM generate the mask on-demand with the correct rectangular shape; getting this wrong (using a square mask of size T when Q has only 1 row) wastes compute but still produces correct output."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Filling the mask with `0.0` (instead of `-∞` or a large-negative finite) before softmax. Zero is ADDITIVE neutrality — it means 'no change to this score' — so a mask of zeros is a no-op. This is the single most common first-time causal-mask bug.",
+      "references": [
+        "https://arxiv.org/abs/1706.03762",
+        "https://peterbloem.nl/blog/transformers"
+      ],
+      "added_in": "d049c8f465e7e82a43c4abdc0ee864bb8bb782e9"
+    },
+    {
+      "id": "nb05-q04",
+      "notebook": "05_self_attention.ipynb",
+      "section": "Attention Memory — O(B·H·T²)",
+      "difficulty": "core",
+      "roles": [
+        "research_engineer",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "memory",
+        "complexity",
+        "long-context",
+        "attention-matrix"
+      ],
+      "question": "Derive the working-set memory formula for the attention matrix: `O(B · H · T²)` elements. At B=1, H=32, T=8192, bf16, how many bytes is that? What's the pathology that kicks in past ~8k context and what does FlashAttention change?",
+      "answer_key_points": [
+        "Derivation: the raw attention scores matrix `Q·Kᵀ` has shape (B, H, T, T). Each head computes its own T × T similarity matrix. Total elements: `B · H · T · T = B · H · T²`. The softmax output has the same shape. Both are materialized in HBM by default.",
+        "Concrete bytes at B=1, H=32, T=8192, bf16: `1 · 32 · 8192² · 2 = 4,294,967,296` bytes = 4.29 GiB. PER LAYER. At 32 layers that's 137 GiB — larger than the weights of most open models.",
+        "Pathology: memory GROWS QUADRATICALLY with T. Double the context from 8k → 16k and attention-matrix memory QUADRUPLES (17 GiB/layer). This is why decoder-only models historically capped at 2k-8k context — it's not compute, it's the attention-matrix materialization.",
+        "FlashAttention (Dao et al., 2022) changes: it NEVER materializes the full T × T attention matrix in HBM. Instead it tiles Q, K, V into SRAM-sized blocks, computes softmax online using the online-softmax recurrence (Milakov & Gimelshein 2018), and streams blocks through SRAM. Working set becomes O(B · H · T · d_head) — LINEAR in T, not quadratic.",
+        "FlashAttention is NOT an approximation. The final output is bit-wise identical (up to float associativity) to standard attention. The win is PURELY memory-access pattern: HBM reads drop from O(T²) to O(T), which is why it's 2-4× faster in wall-clock despite having the same FLOP count.",
+        "2024 frontier: FlashAttention-3 (2024) adds FP8 + warp specialization + async execution on Hopper GPUs. vLLM, SGLang, TensorRT-LLM all ship FA2/FA3. MLX has a native `mx.fast.scaled_dot_product_attention` that plays the same role on Apple Silicon.",
+        "Training vs inference: in TRAINING we also need the T² attention matrix for the backward pass (gradients flow through the softmax). FlashAttention recomputes it during the backward from SRAM rather than caching in HBM — trades FLOPs for memory. At INFERENCE with KV cache the 'attention matrix' is rectangular (1 × T for decode) — the quadratic issue is the PREFILL phase only."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Quoting the complexity as O(T²) and stopping there — forgetting the `B · H` multipliers. At H=32 heads and B=4 batch, the attention matrix is 128× the size of a single (T, T) matrix. Interviewers test this by asking 'what actually fits on an 80 GB A100 at 64k context?'",
+      "references": [
+        "https://arxiv.org/abs/2205.14135",
+        "https://arxiv.org/abs/2307.08691"
+      ],
+      "added_in": "d049c8f465e7e82a43c4abdc0ee864bb8bb782e9"
+    },
+    {
+      "id": "nb05-q05",
+      "notebook": "05_self_attention.ipynb",
+      "section": "Cross-Attention vs Self-Attention",
+      "difficulty": "stretch",
+      "roles": [
+        "mle",
+        "research_engineer"
+      ],
+      "topic_tags": [
+        "cross-attention",
+        "self-attention",
+        "encoder-decoder"
+      ],
+      "question": "Distinguish self-attention from cross-attention. Where does each one get its Q, K, V from? Why did decoder-only models (GPT) eliminate cross-attention even though the original Transformer paper used it heavily?",
+      "answer_key_points": [
+        "Self-attention: Q, K, V all come from the SAME sequence. `Q = X·W_Q, K = X·W_K, V = X·W_V` with the same `X`. Every token attends to every other token in its own sequence (subject to mask).",
+        "Cross-attention: Q comes from one sequence (usually the decoder's current hidden state), K and V come from a DIFFERENT sequence (usually the encoder output). `Q = X_dec · W_Q, K = X_enc · W_K, V = X_enc · W_V`. The decoder token asks a query against the encoder's key-value database.",
+        "The original Transformer (Vaswani 2017) was encoder-decoder for translation: English sentence → encoder self-attention → encoder output. Target French token → decoder self-attention (over generated prefix) → cross-attention over the encoder output → next French token. Three attention blocks per decoder layer.",
+        "Why decoder-only models killed cross-attention: (a) it's a SEPARATE block with SEPARATE K/V projections, doubling parameter count per layer; (b) it requires a two-stage pipeline (encode first, then decode) that's awkward for streaming / autoregressive serving; (c) the 2019+ wave of research (GPT-2) showed that a big enough decoder-only model can do every 'encoder-decoder' task by PREPENDING the source sequence as a prompt — self-attention over the full prompt + response reproduces cross-attention's effect.",
+        "Where cross-attention is still alive in 2024–2025: (a) multimodal models — image/audio encoders produce a small set of key-value tokens that the text decoder cross-attends to (Flamingo, Llava-Next, Whisper); (b) retrieval-augmented generation with a separate retriever-produced KV source (RETRO, earlier Atlas); (c) speculative-decoding drafters that cross-attend to the target model's hidden states; (d) encoder-decoder variants (T5, Bart, Whisper) are still used for translation / ASR.",
+        "Cost note: in cross-attention the K/V are precomputed ONCE from the encoder (or vision encoder) and REUSED across every decoder step — it looks expensive but the amortized cost per generated token is low. That's what makes multimodal decoders practical.",
+        "Implementation in production: vLLM supports cross-attention via encoder-decoder runner (used for Whisper); SGLang handles it via its multi-modal path; MLX-LM supports encoder-decoder models via the flash cross-attention primitive. Self-attention remains the hot path."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Saying 'cross-attention is just self-attention over a concatenated sequence'. They're different ops — in cross-attention Q and K come from DIFFERENT projection matrices (W_Q_dec vs W_K_enc) AND from different input sequences. Concatenate-then-self-attend would share the projections and is not an equivalent computation.",
+      "references": [
+        "https://arxiv.org/abs/1706.03762",
+        "https://arxiv.org/abs/2204.14198"
+      ],
+      "added_in": "d049c8f465e7e82a43c4abdc0ee864bb8bb782e9"
+    },
+    {
+      "id": "nb05-q06",
+      "notebook": "05_self_attention.ipynb",
+      "section": "Scaled-Dot-Product vs Additive Attention",
+      "difficulty": "stretch",
+      "roles": [
+        "research_engineer",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "sdpa",
+        "additive-attention",
+        "bahdanau",
+        "luong"
+      ],
+      "question": "Compare scaled-dot-product attention to additive (Bahdanau) attention. Write the score formula for each, compare parameter counts, and explain why dot-product-plus-scaling won even though Bahdanau preceded it and was theoretically no worse.",
+      "answer_key_points": [
+        "Additive / Bahdanau (2014): `score(q, k) = vᵀ · tanh(W_q·q + W_k·k)`. Explicit trainable MLP computes the similarity. Parameters: W_q (d×d), W_k (d×d), v (d) — 2·d² + d extra params PER ATTENTION HEAD.",
+        "Luong multiplicative (2015): `score(q, k) = qᵀ · W · k` — dot product with a trainable bilinear form. Cheaper than Bahdanau but still has d² extra params. Luong also proposed `score = qᵀ·k` (plain dot) but with no scaling it's unstable at large d.",
+        "Scaled dot-product / Vaswani (2017): `score(q, k) = (qᵀ·k) / √d_head`. ZERO extra parameters beyond what W_Q/W_K already supply; the scaling factor is a deterministic constant. This is the only one with both O(1) per-pair compute AND zero per-head parameters.",
+        "Parameter count winner: SDPA — 0 extra params per head. Bahdanau adds ~2·d_head² per head. At d_head=128, H=32 heads, 32 layers that's 32·32·2·128² = ~33M parameters Bahdanau would cost just for attention-score computation, on top of W_Q/W_K/W_V/W_O.",
+        "Parallelism winner: SDPA — it's ONE matmul `Q·Kᵀ` over (T, T) output. Bahdanau requires a broadcast-add `W_q·q + W_k·k` (T, T, d) and then a `tanh` and then a `vᵀ` reduction — THREE separate ops with intermediate tensors of shape (T, T, d). SDPA's single matmul is what plays cleanly to modern GEMM hardware (Tensor Cores, Apple AMX).",
+        "Why SDPA won historically: on GPUs with big matmul units Bahdanau's three-stage pipeline is memory-bound, while SDPA is compute-bound — factor ~10× throughput advantage at d_head=64. Once the 2017 paper showed that with √d_head scaling the QUALITY is indistinguishable, the engineering case was overwhelming.",
+        "What Bahdanau still wins at: differentiability through NON-DIFFERENTIABLE keys. If you want keys to be discrete structures (e.g. typed database entries) and learn the similarity function end-to-end, a trainable MLP score function is more expressive than a fixed dot product. This is why some structured-prediction / graph-attention variants still use additive scoring."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Claiming 'SDPA is faster because dot products are cheaper than MLPs'. The real win is that SDPA is ONE big matmul — which maps directly to the matmul-accelerator hardware — while additive attention's three-step pipeline generates intermediate tensors that dominate the memory-access budget. FLOP count is not the bottleneck.",
+      "references": [
+        "https://arxiv.org/abs/1409.0473",
+        "https://arxiv.org/abs/1508.04025",
+        "https://arxiv.org/abs/1706.03762"
+      ],
+      "added_in": "d049c8f465e7e82a43c4abdc0ee864bb8bb782e9"
+    },
+    {
+      "id": "nb05-q07",
+      "notebook": "05_self_attention.ipynb",
+      "section": "Attention FLOPs & Arithmetic Intensity",
+      "difficulty": "research",
+      "roles": [
+        "research_engineer",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "flops",
+        "arithmetic-intensity",
+        "flash-attention",
+        "roofline"
+      ],
+      "question": "Derive the FLOP count for one layer of attention: `O(B · H · T² · d_head)`. Compute the arithmetic intensity (FLOPs / byte of data moved through HBM) at T=8192, d_head=128 and explain why vanilla attention is memory-bandwidth-bound rather than compute-bound on modern GPUs. This is the roofline argument behind FlashAttention.",
+      "answer_key_points": [
+        "FLOP derivation: `Q·Kᵀ` is a (T, d_head) × (d_head, T) matmul — 2 · T² · d_head FLOPs per head. Then `softmax(...)·V` is a (T, T) × (T, d_head) matmul — another 2 · T² · d_head FLOPs. Per head per layer: 4 · T² · d_head. Across H heads and batch B: `4 · B · H · T² · d_head` FLOPs.",
+        "Concrete at B=1, H=32, T=8192, d_head=128: 4 · 1 · 32 · 8192² · 128 ≈ 1.1 TFLOPs per attention layer. Per forward (32 layers): 35 TFLOPs from attention alone. Modern LLMs are attention-dominated past 16k context.",
+        "HBM memory traffic (vanilla): load Q (B·H·T·d_head bf16), K (same), V (same); write full scores matrix (B·H·T·T bf16); read back, write softmax output (B·H·T·T); read for V-matmul; write final output (B·H·T·d_head). Dominant term: two reads and two writes of the T² matrix — 4·B·H·T² bytes in bf16.",
+        "Arithmetic intensity: FLOPs / byte = (4 · B · H · T² · d_head) / (4 · B · H · T² · 2) = d_head / 2. At d_head=128 that's 64 FLOPs/byte. Ridge point of an H100 is ~1000 FLOPs/byte (800 TFLOPS bf16 / 3 TB/s HBM). 64 ≪ 1000 ⇒ attention is memory-bandwidth-bound at this d_head.",
+        "FlashAttention's insight: never MATERIALIZE the T² matrix in HBM. Tile into SRAM-sized blocks and keep partial softmax statistics. HBM traffic becomes O(B·H·T·d_head) — linear in T. New arithmetic intensity: (4·B·H·T²·d_head) / (B·H·T·d_head · constant) = O(T). At T=8192 this is O(8192) — far above the ridge point. Attention becomes compute-bound.",
+        "Measured consequences: FlashAttention-2 on H100 runs attention at ~70% of peak bf16 compute; vanilla attention gets ~10% because it's waiting on HBM. The 2-4× wall-clock speedup FlashAttention reports is NOT a FLOP reduction — it's a memory-access reduction.",
+        "Why this matters for serving: at large batch (B) the ridge-point gap shrinks (more FLOPs per byte moved), so even vanilla attention becomes compute-bound at B=64+. FlashAttention's win is biggest at B=1 — single-request serving, exactly the latency-sensitive path. This is why vLLM/SGLang/TRT-LLM all hard-dep on FA2/FA3."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Answering 'attention is compute-bound because it's O(T²)'. It IS O(T²), but the arithmetic intensity (64 FLOP/byte at d_head=128) is below the hardware's ridge point (~1000 FLOP/byte for H100 bf16), so the bottleneck is HBM bandwidth, not TFLOPS. Roofline analysis distinguishes 'compute cost' from 'compute-bound'.",
+      "references": [
+        "https://arxiv.org/abs/2205.14135",
+        "https://horace.io/brrr_intro.html",
+        "https://github.com/Dao-AILab/flash-attention"
+      ],
+      "added_in": "d049c8f465e7e82a43c4abdc0ee864bb8bb782e9"
     }
   ]
 }
