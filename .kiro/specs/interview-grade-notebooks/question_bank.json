@@ -174,6 +174,182 @@
         "https://docs.vllm.ai/en/latest/serving/metrics.html"
       ],
       "added_in": "f1c1b325461698bc3259fff4b94a7dff6534af83"
+    },
+    {
+      "id": "nb01-q01",
+      "notebook": "01_mlx_fundamentals.ipynb",
+      "section": "MLX vs PyTorch: Lazy Evaluation",
+      "difficulty": "warmup",
+      "roles": [
+        "mle"
+      ],
+      "topic_tags": [
+        "mlx",
+        "lazy-evaluation",
+        "semantics"
+      ],
+      "question": "Explain MLX's lazy evaluation model in one paragraph. What happens when you write `c = a + b` on two MLX arrays, and when does the addition actually run on the GPU?",
+      "answer_key_points": [
+        "`a + b` builds a node in a directed-acyclic compute graph; no kernel is dispatched yet.",
+        "The node carries shape + dtype metadata (propagated statically) so downstream ops can be composed without running anything.",
+        "Materialization happens on: `mx.eval(c)`, `c.item()`, `np.array(c)`, `print(c)`, or when another `mx.eval` consumes `c`.",
+        "This lets the scheduler fuse chains like `sum(exp(softmax(x)))` into a single Metal kernel (Requirement 2.1).",
+        "Consequence: timing a lazy op without `mx.eval` measures graph-construction, not execution — the #1 beginner trap."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Saying 'lazy means async like CUDA streams' — it's stronger: NO kernel is launched at all until materialization is forced.",
+      "references": [
+        "https://ml-explore.github.io/mlx/build/html/usage/lazy_evaluation.html"
+      ],
+      "added_in": "7240bbde243341301df18cd49da783a382bfc690"
+    },
+    {
+      "id": "nb01-q02",
+      "notebook": "01_mlx_fundamentals.ipynb",
+      "section": "Lazy Evaluation & Graph Capture",
+      "difficulty": "core",
+      "roles": [
+        "mle",
+        "research_engineer"
+      ],
+      "topic_tags": [
+        "mlx",
+        "mx.compile",
+        "graph-capture",
+        "fusion"
+      ],
+      "question": "When you wrap a function with `mx.compile`, what exactly is captured, what Python-side behaviour becomes unsafe, and when does the graph get re-traced?",
+      "answer_key_points": [
+        "Capture happens on first call: MLX traces the function against symbolic placeholders matching the input shapes/dtypes, producing a fused kernel plan.",
+        "Only MLX-array ops enter the graph; Python control flow based on `.item()` / host values is baked in at trace time and won't re-run per call.",
+        "Python side effects (print, list.append, random.random) fire only during trace, not on subsequent calls — a classic foot-gun.",
+        "Re-trace triggers: a new input shape, a new dtype, or a different set of keyword args; MLX caches one compiled version per input signature.",
+        "Benefit: kernel fusion + reduced graph-construction overhead on the hot loop (typically 1.5–3× throughput on small ops)."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Assuming `mx.compile` behaves like `torch.compile` with dynamic shape support — MLX recompiles on shape change.",
+      "references": [
+        "https://ml-explore.github.io/mlx/build/html/usage/compile.html"
+      ],
+      "added_in": "7240bbde243341301df18cd49da783a382bfc690"
+    },
+    {
+      "id": "nb01-q03",
+      "notebook": "01_mlx_fundamentals.ipynb",
+      "section": "MLX Array Creation & Shape Semantics",
+      "difficulty": "core",
+      "roles": [
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "broadcasting",
+        "shape",
+        "numpy-semantics"
+      ],
+      "question": "Walk me through MLX's broadcasting rules and give a concrete example where two shapes broadcast correctly, and one where they don't — with the exact error reasoning.",
+      "answer_key_points": [
+        "Rule: align from the TRAILING axis; a dimension broadcasts if it is equal to the other OR equal to 1.",
+        "Missing leading dims are treated as 1 (prepend-1 rule).",
+        "Valid example: `(4, 1, 32) * (8, 32)` → result `(4, 8, 32)` (trailing 32==32, middle 1→8, leading 4 prepended).",
+        "Invalid example: `(4, 3, 32) * (5, 32)` — middle axis 3 vs 5 are neither equal nor 1, so the op fails with a shape mismatch.",
+        "Semantics match NumPy exactly; MLX performs shape inference lazily so errors surface at graph-construction, not at `mx.eval`."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Trying to broadcast `(N, D)` with `(D, N)` — the leading axis needs transpose, not broadcast; many candidates reach for reshape before diagnosing.",
+      "references": [
+        "https://numpy.org/doc/stable/user/basics.broadcasting.html"
+      ],
+      "added_in": "7240bbde243341301df18cd49da783a382bfc690"
+    },
+    {
+      "id": "nb01-q04",
+      "notebook": "01_mlx_fundamentals.ipynb",
+      "section": "Lazy Evaluation — Timing Traps",
+      "difficulty": "core",
+      "roles": [
+        "mle",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "benchmarking",
+        "mx.eval",
+        "timing"
+      ],
+      "question": "A candidate reports that an MLX matmul on a (2048, 2048) fp32 input 'ran in 45 microseconds' using `time.perf_counter`. Why is this wrong, and what are the three invariants every correct MLX benchmark must satisfy?",
+      "answer_key_points": [
+        "Without an explicit `mx.eval` inside the timed region, you're timing graph construction — the actual kernel has not launched.",
+        "Invariant 1: call `mx.eval(result)` inside the timed loop so the host actually waits on the GPU.",
+        "Invariant 2: at least 3 warmup iterations before the timed loop — compile, allocate, and JIT-cache populate.",
+        "Invariant 3: measure N ≥ 5 timed iterations and report the mean (or median) — the first post-warmup iter can still be an outlier from scheduler-side cold caches.",
+        "Optional: `mx.synchronize()` is implicit inside `mx.eval`; don't 'double-sync' by calling both — it just adds host-side overhead."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Calling `mx.eval` OUTSIDE the timed region but INSIDE a wrapping function — only the first iter actually runs the kernel; later iters hit the evaluated tensor and look instant.",
+      "references": [
+        "https://ml-explore.github.io/mlx/build/html/usage/lazy_evaluation.html"
+      ],
+      "added_in": "7240bbde243341301df18cd49da783a382bfc690"
+    },
+    {
+      "id": "nb01-q05",
+      "notebook": "01_mlx_fundamentals.ipynb",
+      "section": "Automatic Differentiation — Numerics",
+      "difficulty": "stretch",
+      "roles": [
+        "research_engineer",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "bfloat16",
+        "numerics",
+        "mixed-precision"
+      ],
+      "question": "Compare float16, bfloat16, and float32 for LLM training on Apple Silicon. What are the bit-layouts, the representable range, and which failure modes show up in gradient accumulation?",
+      "answer_key_points": [
+        "fp32: 1 sign / 8 exp / 23 mantissa; range ~1e-38 .. 3e38; ~7 decimal digits.",
+        "fp16: 1 / 5 / 10; range ~6e-5 .. 6.5e4; ~3 decimal digits — narrow range causes underflow on small gradients and overflow on softmax logits.",
+        "bf16: 1 / 8 / 7; SAME exponent width as fp32 → same dynamic range; ~2–3 decimal digits of precision.",
+        "bf16 is the modern default for LLM training because underflow/overflow vanish, at the cost of ~1 decimal digit of precision.",
+        "Failure mode: summing many small updates in bf16 stalls (last-bit noise dominates); keep optimizer state in fp32 (mixed-precision pattern) or use Kahan summation.",
+        "On M-series: bf16 kernels are hardware-accelerated on the GPU for matmul; the CPU path may fall back to fp32 for unsupported ops."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Claiming fp16 and bf16 have the same dynamic range — they differ by ~10^34 in max magnitude because of the 5-bit vs 8-bit exponent.",
+      "references": [
+        "https://arxiv.org/abs/1905.12322"
+      ],
+      "added_in": "7240bbde243341301df18cd49da783a382bfc690"
+    },
+    {
+      "id": "nb01-q06",
+      "notebook": "01_mlx_fundamentals.ipynb",
+      "section": "Key Takeaways — Internals",
+      "difficulty": "research",
+      "roles": [
+        "research_engineer",
+        "systems_engineer"
+      ],
+      "topic_tags": [
+        "unified-memory",
+        "zero-copy",
+        "mlx-internals"
+      ],
+      "question": "MLX claims 'zero-copy' NumPy interop on Apple Silicon. Dig into the internals: when is the guarantee actually exact, when does MLX silently copy, and how would you verify it from user code?",
+      "answer_key_points": [
+        "Zero-copy is a direct consequence of Unified Memory: both CPU and GPU share the same physical allocator, so a pointer swap suffices.",
+        "Exactly zero-copy when: dtype matches a supported MLX dtype (f32/f16/bf16/i32/i8/u8/bool), the NumPy array is contiguous (C-order), and no endianness swap is needed.",
+        "MLX *will* copy when: the array is non-contiguous (strided view), dtype needs casting, or the array originates from a non-Metal allocator (e.g., mmap'd file on certain paths).",
+        "Verification: compare `array.__array_interface__['data'][0]` before and after `mx.array(x)` and `np.array(mx_x)` — same pointer ⇒ zero-copy.",
+        "Reverse direction is stricter: `np.array(mx_arr)` is zero-copy only when MLX's internal buffer is aligned to NumPy's stride expectations; otherwise MLX emits a contiguous copy.",
+        "Systems upshot: a 30 GB model-weight load costs ~0 bytes of host↔device traffic on UMA vs ~100 ms via PCIe on a discrete GPU — this is the primary speed-up source for MLX weight loading."
+      ],
+      "worked_solution_cell_id": null,
+      "trap": "Assuming 'UMA = always zero-copy' — strided / non-contiguous views ALWAYS force a copy to satisfy MLX's contiguity invariant.",
+      "references": [
+        "https://ml-explore.github.io/mlx/build/html/index.html",
+        "https://numpy.org/doc/stable/reference/arrays.interface.html"
+      ],
+      "added_in": "7240bbde243341301df18cd49da783a382bfc690"
     }
   ]
 }
